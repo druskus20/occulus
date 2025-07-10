@@ -3,7 +3,7 @@ use crate::{
     data_task::{self, LogAppendBufReader},
     prelude::*,
 };
-use argus::tracing::occulus::{DashboardEvent, Level};
+use argus::tracing::oculus::{DashboardEvent, Level};
 use eframe::egui;
 use egui::{epaint::color, text::LayoutJob};
 use std::{
@@ -39,14 +39,14 @@ pub enum LogLevelFilter {
     Error,
 }
 
-impl Into<argus::tracing::occulus::Level> for LogLevelFilter {
-    fn into(self) -> argus::tracing::occulus::Level {
+impl Into<argus::tracing::oculus::Level> for LogLevelFilter {
+    fn into(self) -> argus::tracing::oculus::Level {
         match self {
-            LogLevelFilter::Trace => argus::tracing::occulus::Level::TRACE,
-            LogLevelFilter::Debug => argus::tracing::occulus::Level::DEBUG,
-            LogLevelFilter::Info => argus::tracing::occulus::Level::INFO,
-            LogLevelFilter::Warn => argus::tracing::occulus::Level::WARN,
-            LogLevelFilter::Error => argus::tracing::occulus::Level::ERROR,
+            LogLevelFilter::Trace => argus::tracing::oculus::Level::TRACE,
+            LogLevelFilter::Debug => argus::tracing::oculus::Level::DEBUG,
+            LogLevelFilter::Info => argus::tracing::oculus::Level::INFO,
+            LogLevelFilter::Warn => argus::tracing::oculus::Level::WARN,
+            LogLevelFilter::Error => argus::tracing::oculus::Level::ERROR,
         }
     }
 }

@@ -1,5 +1,5 @@
 [package]
-name = "occulus"
+name = "oculus"
 version = "0.1.0"
 edition = "2024"
 
@@ -10,7 +10,7 @@ spells = { path = "/home/drusk/code/arcana/spells", features = ["ctrl_c"] }
 quill = { path = "/home/drusk/code/arcana/quill" }
 argus = { path = "/home/drusk/code/arcana/argus", features = [
   "tracy-profiler",
-  "occulus",
+  "oculus",
 ] }
 shard-protocol = { path = "/home/drusk/thesis/repos/three/libs/shard-protocol" }
 three-utils = { path = "/home/drusk/thesis/repos/three/libs/three-utils" }

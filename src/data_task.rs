@@ -1,6 +1,6 @@
 use crate::egui_app::{self, LogDisplaySettings, UiEvent, create_layout_job};
 use crate::{TokioEguiBridge, prelude::*};
-use argus::tracing::occulus::DashboardEvent;
+use argus::tracing::oculus::DashboardEvent;
 use egui::TextFormat;
 use egui::mutex::Mutex;
 use std::collections::VecDeque;

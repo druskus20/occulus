@@ -13,7 +13,7 @@ use std::{
 };
 
 use self::prelude::*;
-use argus::tracing::occulus::DashboardEvent;
+use argus::tracing::oculus::DashboardEvent;
 use data_task::{DataPrecomputeTask, DataUiBridge, TcpTask};
 use egui::text::LayoutJob;
 use egui_app::LogDisplaySettings;

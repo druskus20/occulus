@@ -2590,7 +2590,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "occulus"
+name = "oculus"
 version = "0.1.0"
 dependencies = [
  "argus",
