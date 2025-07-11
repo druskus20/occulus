@@ -282,6 +282,14 @@ impl eframe::App for EguiApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.heading("Oculus");
+
+            egui::Area::new("fps_display".into())
+                .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-10.0, 10.0))
+                .show(ctx, |ui| {
+                    let fps = 1.0 / ctx.input(|i| i.stable_dt.max(1e-5));
+                    ui.label(format!("FPS: {fps:.1}"));
+                });
+
             self.logs.update();
             let log_buffer = self.logs.read();
             self.log_display.show(ui, &self.to_data, log_buffer);
