@@ -73,15 +73,15 @@ impl<T> LogAppendBufReader<T> {
 // data task -> periodically (timer)  copies the lgos from the tcp task into permanent storage,
 // and computes a set of logs with the filters applied. When the filters change, it recomputes the logs
 pub struct DataPrecomputeTask {
-    incoming_logs_buffer: LogAppendBufReader<DashboardEvent>,
+    incoming_logs_buffer: LogAppendBufReader<Arc<DashboardEvent>>,
 
     // TODO!!!!!!!! - we need to distinghish between "all the logs" and the "logs to display"
     // (which match the filter). Both buffers need to be updated whenever the tick happens.
     // The filtered logs are updated when the filters change.
-    all_logs_buffer: Arc<Mutex<VecDeque<DashboardEvent>>>,
+    all_logs: VecDeque<Arc<DashboardEvent>>,
     // Logs to display, a reference to the logs that match the current filter
-    filtered_logs: VecDeque<DashboardEvent>,
-    egui_log_buffer_rx: triple_buffer::Input<VecDeque<DashboardEvent>>,
+    filtered_logs: VecDeque<Arc<DashboardEvent>>,
+    egui_log_buffer_rx: triple_buffer::Input<VecDeque<Arc<DashboardEvent>>>,
 
     data_task_ctrl: UnboundedReceiver<DataTaskCtrl>,
 
@@ -114,8 +114,7 @@ impl TcpTask {
         })
     }
 
-    async fn tcp_loop(&self, data_ui_bridge: DataUiBridge) -> Result<()> {
-        let mut data_ui_bridge = data_ui_bridge;
+    async fn tcp_loop(&self, mut data_ui_bridge: DataUiBridge) -> Result<()> {
         loop {
             let listener = TcpListener::bind("127.0.0.1:8080").await?;
             info!("Listening for incoming TCP connections on 127.0.0.1:8080");
@@ -152,7 +151,7 @@ impl TcpTask {
     async fn handle_log_stream(
         &self,
         stream: TcpStream,
-        incoming_logs_writer: LogAppendBufWriter<DashboardEvent>,
+        incoming_logs_writer: LogAppendBufWriter<Arc<DashboardEvent>>,
         data_task_ctrl_tx: UnboundedSender<DataTaskCtrl>,
     ) -> Result<()> {
         let reader = BufReader::new(stream);
@@ -160,7 +159,7 @@ impl TcpTask {
 
         while let Ok(Some(line)) = lines.next_line().await {
             let event = serde_json::from_str::<DashboardEvent>(&line)?;
-            incoming_logs_writer.push(event);
+            incoming_logs_writer.push(Arc::new(event));
         }
 
         Ok(())
@@ -170,7 +169,7 @@ impl TcpTask {
 #[derive(Debug)]
 pub struct DataUiBridge {
     /// Shared buffer to publish logs to the EGUI context
-    ui_log_buffer_tx: triple_buffer::Input<VecDeque<DashboardEvent>>,
+    ui_log_buffer_tx: triple_buffer::Input<VecDeque<Arc<DashboardEvent>>>,
     /// Initial log display settings (controlled by the UI)
     log_display_settings: LogDisplaySettings,
     /// Receiver for events from the UI
@@ -185,7 +184,7 @@ pub struct DataUiBridge {
 impl DataUiBridge {
     pub fn new(
         egui_ctx: egui::Context,
-        ui_log_buffer_tx: triple_buffer::Input<VecDeque<DashboardEvent>>,
+        ui_log_buffer_tx: triple_buffer::Input<VecDeque<Arc<DashboardEvent>>>,
         log_display_settings: LogDisplaySettings,
         from_ui: UnboundedReceiver<egui_app::UiEvent>,
     ) -> Self {
@@ -202,11 +201,11 @@ impl DataUiBridge {
 impl DataPrecomputeTask {
     pub fn new(
         data_task_ctrl: UnboundedReceiver<DataTaskCtrl>,
-        incoming_logs_buffer: LogAppendBufReader<DashboardEvent>,
+        incoming_logs_buffer: LogAppendBufReader<Arc<DashboardEvent>>,
         data_ui_bridge: DataUiBridge,
     ) -> Self {
         Self {
-            all_logs_buffer: Arc::new(Mutex::new(VecDeque::new())),
+            all_logs: VecDeque::new(),
             filtered_logs: VecDeque::new(),
             incoming_logs_buffer,
             data_task_ctrl,
@@ -288,7 +287,7 @@ impl DataPrecomputeTask {
             .cloned()
             .collect::<Vec<_>>();
 
-        self.all_logs_buffer.lock().extend(new_logs);
+        self.all_logs.extend(new_logs);
 
         // This avoids swapping the buffers unnecessarily
         if filtered_logs.is_empty() {
@@ -326,7 +325,7 @@ impl DataPrecomputeTask {
     async fn filter_and_refresh_egui_buf(&mut self) {
         info!("Refreshing EGUI buffer");
         let settings = *self.log_display_settings.read().await;
-        let all_logs = &self.all_logs_buffer.lock();
+        let all_logs = &self.all_logs;
 
         let filtered_logs = all_logs
             .iter()

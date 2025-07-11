@@ -91,7 +91,7 @@ impl TracingLogDisplay {
         &mut self,
         ui: &mut Ui,
         to_data: &UnboundedSender<UiEvent>,
-        log_buffer: &VecDeque<DashboardEvent>,
+        log_buffer: &VecDeque<Arc<DashboardEvent>>,
     ) {
         ui.separator();
 
@@ -165,7 +165,7 @@ impl TracingLogDisplay {
         changed
     }
 
-    fn render_logs(&mut self, ui: &mut Ui, filtered_logs: &VecDeque<DashboardEvent>) {
+    fn render_logs(&mut self, ui: &mut Ui, filtered_logs: &VecDeque<Arc<DashboardEvent>>) {
         let text_style = egui::TextStyle::Monospace;
         let row_height = ui.text_style_height(&text_style);
 
@@ -253,7 +253,7 @@ struct EguiState {
 
 struct EguiApp {
     state: EguiState,
-    logs: triple_buffer::Output<VecDeque<DashboardEvent>>,
+    logs: triple_buffer::Output<VecDeque<Arc<DashboardEvent>>>,
     log_display: TracingLogDisplay,
     to_data: UnboundedSender<UiEvent>,
 }
@@ -262,7 +262,7 @@ impl EguiApp {
     fn new(
         cc: &eframe::CreationContext<'_>,
         tokio_egui_bridge: TokioEguiBridge,
-        log_buffer: triple_buffer::Output<VecDeque<DashboardEvent>>,
+        log_buffer: triple_buffer::Output<VecDeque<Arc<DashboardEvent>>>,
         initial_settings: LogDisplaySettings,
         to_data: UnboundedSender<UiEvent>,
     ) -> Self {
@@ -294,7 +294,7 @@ impl eframe::App for EguiApp {
 }
 
 pub fn run_egui(
-    log_buffer: triple_buffer::Output<VecDeque<DashboardEvent>>,
+    log_buffer: triple_buffer::Output<VecDeque<Arc<DashboardEvent>>>,
     tokio_egui_bridge: TokioEguiBridge,
     initial_settings: LogDisplaySettings,
     to_data: UnboundedSender<UiEvent>,

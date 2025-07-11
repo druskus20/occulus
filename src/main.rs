@@ -75,7 +75,7 @@ fn main() -> Result<()> {
 }
 
 fn run_tokio_thread(
-    ui_log_buffer_tx: triple_buffer::Input<VecDeque<DashboardEvent>>,
+    ui_log_buffer_tx: triple_buffer::Input<VecDeque<Arc<DashboardEvent>>>,
     tokio_egui_bridge: TokioEguiBridge,
     initial_log_display_settings: LogDisplaySettings,
     from_ui: UnboundedReceiver<egui_app::UiEvent>,
