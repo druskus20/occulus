@@ -281,7 +281,7 @@ impl EguiApp {
 impl eframe::App for EguiApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         egui::CentralPanel::default().show(ctx, |ui| {
-            ui.heading("Tracing Log Viewer");
+            ui.heading("Oculus");
             self.logs.update();
             let log_buffer = self.logs.read();
             self.log_display.show(ui, &self.to_data, log_buffer);
