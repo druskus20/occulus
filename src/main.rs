@@ -14,7 +14,7 @@ use std::{
 
 use self::prelude::*;
 use argus::tracing::oculus::DashboardEvent;
-use data_task::{DataPrecomputeTask, DataUiBridge, TcpTask};
+use data_task::{DataPrecomputeTask, DataTaskCtrl, DataUiBridge, LogAppendBuf, TcpTask};
 use egui::text::LayoutJob;
 use egui_app::LogDisplaySettings;
 use tokio::{
@@ -96,20 +96,37 @@ fn run_tokio_thread(
             .expect("Failed to create tokio runtime");
 
         rt.block_on(async {
-            let cancel = tokio_egui_bridge.cancelled_fut();
+            // Communication between tasks
+            let (data_task_ctrl_tx, data_task_ctrl_rx) =
+                tokio::sync::mpsc::unbounded_channel::<DataTaskCtrl>();
+            let (incoming_logs_writer, incoming_logs_reader) = LogAppendBuf::new();
 
+            // TCP TASK
+            let _tcp_task = TcpTask::new(
+                tokio_egui_bridge.cancel_token(),
+                data_task_ctrl_tx,
+                incoming_logs_writer,
+            )
+            .spawn();
+
+            // DATA TASK
             let egui_ctx = tokio_egui_bridge.wait_egui_ctx().await;
-
             let data_ui_bridge = DataUiBridge::new(
                 egui_ctx,
                 ui_log_buffer_tx,
                 initial_log_display_settings,
                 from_ui,
             );
+            let _data_precompute_task_handle = DataPrecomputeTask::new(
+                tokio_egui_bridge.cancel_token(),
+                data_task_ctrl_rx,
+                incoming_logs_reader,
+                data_ui_bridge,
+            )
+            .spawn();
 
-            // TCP
-            let _tcp_task = TcpTask::new(tokio_egui_bridge.cancel_token()).spawn(data_ui_bridge);
-
+            // Cancel
+            let cancel = tokio_egui_bridge.cancelled_fut();
             tokio::select! {
                 // You can add other async tasks here if needed
                 _ = cancel => {

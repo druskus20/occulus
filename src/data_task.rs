@@ -93,27 +93,36 @@ pub struct DataPrecomputeTask {
 
 pub struct TcpTask {
     cancel: CancellationToken,
+    data_task_ctrl_tx: UnboundedSender<DataTaskCtrl>,
+    incoming_logs_writer: LogAppendBufWriter<Arc<DashboardEvent>>,
 }
 
 pub enum DataTaskCtrl {
-    Stop,
+    StartTimer,
+    StopTimer,
 }
 
 impl TcpTask {
-    pub fn new(cancel: CancellationToken) -> Self {
-        Self { cancel }
+    pub fn new(
+        cancel: CancellationToken,
+        data_task_ctrl_tx: UnboundedSender<DataTaskCtrl>,
+        incoming_logs_writer: LogAppendBufWriter<Arc<DashboardEvent>>,
+    ) -> Self {
+        Self {
+            cancel,
+            data_task_ctrl_tx,
+            incoming_logs_writer,
+        }
     }
 
-    pub fn spawn(self, data_ui_bridge: DataUiBridge) -> JoinHandle<Result<()>> {
+    pub fn spawn(self) -> JoinHandle<Result<()>> {
         tokio::task::spawn(async move {
-            self.tcp_loop(data_ui_bridge)
-                .await
-                .wrap_err("TCP task failed")?;
+            self.tcp_loop().await.wrap_err("TCP task failed")?;
             Ok(())
         })
     }
 
-    async fn tcp_loop(&self, mut data_ui_bridge: DataUiBridge) -> Result<()> {
+    async fn tcp_loop(&self) -> Result<()> {
         // accept tpc connections in loop - only one at a time
         loop {
             let listener = TcpListener::bind("127.0.0.1:8080").await?;
@@ -121,49 +130,25 @@ impl TcpTask {
 
             let (stream, addr) = listener.accept().await?;
             info!("Accepted connection from {}", addr);
-
-            // Init stuff to bridge tcp and data tasks
-            //let egui_ctx = tokio_egui_bridge.wait_egui_ctx().await;
-            let (incoming_logs_writer, incoming_logs_reader) = LogAppendBuf::new();
-
-            let (data_task_ctrl_tx, data_task_ctrl_rx) =
-                tokio::sync::mpsc::unbounded_channel::<DataTaskCtrl>();
-
-            // Start a data task
-            let data_precompute_task_handle =
-                DataPrecomputeTask::new(data_task_ctrl_rx, incoming_logs_reader, data_ui_bridge)
-                    .spawn();
+            self.data_task_ctrl_tx.send(DataTaskCtrl::StartTimer)?;
 
             // Forward messages
-            self.handle_log_stream(stream, incoming_logs_writer)
+            self.handle_log_stream(stream)
                 .await
                 .wrap_err(format!("Connection handling failed {addr}"))?;
 
             info!("Connection from {} closed, stopping data task", addr);
-            data_task_ctrl_tx
-                .send(DataTaskCtrl::Stop)
-                .unwrap_or_else(|e| {
-                    error!("Failed to send DataTaskCtrl::Start: {e}");
-                });
-
-            // await the end and return back the ownership
-            data_ui_bridge = data_precompute_task_handle
-                .await
-                .wrap_err("Data precompute task failed")??;
+            self.data_task_ctrl_tx.send(DataTaskCtrl::StopTimer)?;
         }
     }
 
-    async fn handle_log_stream(
-        &self,
-        stream: TcpStream,
-        incoming_logs_writer: LogAppendBufWriter<Arc<DashboardEvent>>,
-    ) -> Result<()> {
+    async fn handle_log_stream(&self, stream: TcpStream) -> Result<()> {
         let reader = BufReader::new(stream);
         let mut lines = reader.lines();
 
         while let Ok(Some(line)) = lines.next_line().await {
             let event = serde_json::from_str::<DashboardEvent>(&line)?;
-            incoming_logs_writer.push(Arc::new(event));
+            self.incoming_logs_writer.push(Arc::new(event));
         }
 
         Ok(())
@@ -204,6 +189,7 @@ impl DataUiBridge {
 
 impl DataPrecomputeTask {
     pub fn new(
+        cancel: CancellationToken,
         data_task_ctrl: UnboundedReceiver<DataTaskCtrl>,
         incoming_logs_buffer: LogAppendBufReader<Arc<DashboardEvent>>,
         data_ui_bridge: DataUiBridge,
@@ -234,31 +220,36 @@ impl DataPrecomputeTask {
     /// Starts running once a `DataTaskCtrl::Start` message is received. (by the TCP task)
     pub fn spawn(mut self) -> JoinHandle<std::result::Result<DataUiBridge, DataTaskError>> {
         const TICK_INTERVAL_MS: u64 = 100;
-        let mut timer = tokio::time::interval(Duration::from_millis(TICK_INTERVAL_MS));
+        let mut timer = tokio::time::interval(Duration::from_millis(u64::MAX));
+        let mut timer_enabled = true; // Start with timer enabled
 
         tokio::task::spawn(async move {
             loop {
-                warn!("Loop iter");
                 tokio::select! {
                     r = self.data_task_ctrl.recv() => {
                         match r {
-                            Some(DataTaskCtrl::Stop) => {
-                                info!("Received DataTaskCtrl::Stop, exiting loop");
-                                return Ok(self.data_ui_bridge().await);
+                            Some(DataTaskCtrl::StopTimer) => {
+                                info!("Received DataTaskCtrl::Stop, disabling timer");
+                                timer_enabled = false;
+                                timer = tokio::time::interval(Duration::from_millis(u64::MAX)); // this is shitty but better than Pin
+                            }
+                            Some(DataTaskCtrl::StartTimer) => {
+                                info!("Received DataTaskCtrl::Start, enabling timer");
+                                timer_enabled = true;
+                                // Reset the timer to start fresh
+                                timer = tokio::time::interval(Duration::from_millis(TICK_INTERVAL_MS));
                             }
                             None => {
                                 info!("DataTaskCtrl channel closed, exiting loop");
                                 return Ok(self.data_ui_bridge().await);
                             }
                         }
-
                     },
                     r = self.from_ui.recv() => {
                         match r {
                             Some(event) => {
                                 trace!("Received UI event: {:?}", event);
                                 self.handle_ui_event(event).await;
-
                             }
                             None => {
                                 info!("UI event channel closed, exiting loop");
@@ -266,7 +257,7 @@ impl DataPrecomputeTask {
                             }
                         }
                     },
-                    _ = timer.tick() => {
+                    _ = timer.tick(), if timer_enabled => {
                         match self.publish_new_logs().await {
                             Ok(_) => trace!("Published new logs to EGUI context"),
                             Err(e) => {
@@ -282,7 +273,6 @@ impl DataPrecomputeTask {
             }
         })
     }
-
     // publush new logs to the EGUI context
     #[tracing::instrument(skip_all)]
     pub async fn publish_new_logs(&mut self) -> Result<()> {
