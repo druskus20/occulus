@@ -34,7 +34,7 @@ pub struct LogAppendBufReader<T> {
 }
 
 impl<T> LogAppendBuf<T> {
-    pub fn new() -> (LogAppendBufWriter<T>, LogAppendBufReader<T>) {
+    pub fn split() -> (LogAppendBufWriter<T>, LogAppendBufReader<T>) {
         let inner = Arc::new(Mutex::new(VecDeque::new()));
         (
             LogAppendBufWriter {

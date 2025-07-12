@@ -115,7 +115,7 @@ fn run_tokio_thread(
             // Communication between tasks
             let (data_task_ctrl_tx, data_task_ctrl_rx) =
                 tokio::sync::mpsc::unbounded_channel::<DataTaskCtrl>();
-            let (incoming_logs_writer, incoming_logs_reader) = LogAppendBuf::new();
+            let (incoming_logs_writer, incoming_logs_reader) = LogAppendBuf::split();
 
             // TCP TASK
             let _tcp_task = TcpTask::new(
