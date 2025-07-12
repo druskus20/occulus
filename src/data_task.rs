@@ -1,11 +1,9 @@
 use crate::egui_app::{self, LogDisplaySettings, UiEvent, create_layout_job};
-use crate::{TokioEguiBridge, prelude::*};
+use crate::prelude::*;
 use argus::tracing::oculus::DashboardEvent;
-use egui::TextFormat;
 use egui::mutex::Mutex;
 use std::collections::VecDeque;
 use std::error::Error;
-use std::io;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, BufReader};
@@ -81,7 +79,7 @@ pub struct DataPrecomputeTask {
     all_logs: VecDeque<Arc<DashboardEvent>>,
     // Logs to display, a reference to the logs that match the current filter
     filtered_logs: VecDeque<Arc<DashboardEvent>>,
-    egui_log_buffer_rx: triple_buffer::Input<VecDeque<Arc<DashboardEvent>>>,
+    display_data_tx: triple_buffer::Input<DisplayData>,
 
     data_task_ctrl: UnboundedReceiver<DataTaskCtrl>,
 
@@ -158,7 +156,7 @@ impl TcpTask {
 #[derive(Debug)]
 pub struct DataUiBridge {
     /// Shared buffer to publish logs to the EGUI context
-    ui_log_buffer_tx: triple_buffer::Input<VecDeque<Arc<DashboardEvent>>>,
+    display_data_tx: triple_buffer::Input<DisplayData>,
     /// Initial log display settings (controlled by the UI)
     log_display_settings: LogDisplaySettings,
     /// Receiver for events from the UI
@@ -173,12 +171,12 @@ pub struct DataUiBridge {
 impl DataUiBridge {
     pub fn new(
         egui_ctx: egui::Context,
-        ui_log_buffer_tx: triple_buffer::Input<VecDeque<Arc<DashboardEvent>>>,
+        display_data_tx: triple_buffer::Input<DisplayData>,
         log_display_settings: LogDisplaySettings,
         from_ui: UnboundedReceiver<egui_app::UiEvent>,
     ) -> Self {
         Self {
-            ui_log_buffer_tx,
+            display_data_tx,
             log_display_settings,
             from_ui,
             egui_ctx,
@@ -202,14 +200,14 @@ impl DataPrecomputeTask {
             from_ui: data_ui_bridge.from_ui,
             log_display_settings: RwLock::new(data_ui_bridge.log_display_settings),
             egui_ctx: data_ui_bridge.egui_ctx.clone(),
-            egui_log_buffer_rx: data_ui_bridge.ui_log_buffer_tx,
+            display_data_tx: data_ui_bridge.display_data_tx,
             cancel: data_ui_bridge.cancel.clone(),
         }
     }
 
     async fn data_ui_bridge(self) -> DataUiBridge {
         DataUiBridge {
-            ui_log_buffer_tx: self.egui_log_buffer_rx,
+            display_data_tx: self.display_data_tx,
             log_display_settings: *self.log_display_settings.read().await,
             from_ui: self.from_ui,
             egui_ctx: self.egui_ctx.clone(),
@@ -287,7 +285,7 @@ impl DataPrecomputeTask {
         let new_logs = self.incoming_logs_buffer.swap();
 
         // Pre-compute the layout jobs for the new logs
-        let filtered_logs = new_logs
+        let filtered_new_logs = new_logs
             .iter()
             // Filter with the current log display settings
             .filter(|event| event.level >= log_display_settings.level_filter.into())
@@ -297,7 +295,7 @@ impl DataPrecomputeTask {
         self.all_logs.extend(new_logs);
 
         // This avoids swapping the buffers unnecessarily
-        if filtered_logs.is_empty() {
+        if filtered_new_logs.is_empty() {
             trace!("No new logs to publish (matching the current filter)");
             return Ok(());
         }
@@ -305,12 +303,15 @@ impl DataPrecomputeTask {
         // Update and publish the new logs to the EGUI context
         info!(
             "Requesting EGUI repaint with {} new jobs",
-            filtered_logs.len()
+            filtered_new_logs.len()
         );
-        self.filtered_logs.extend(filtered_logs);
+        self.filtered_logs.extend(filtered_new_logs);
         // All the logs - we cannot extend, becasue how triple_buffer is implemented
-        *self.egui_log_buffer_rx.input_buffer_mut() = self.filtered_logs.clone();
-        self.egui_log_buffer_rx.publish();
+        *self.display_data_tx.input_buffer_mut() = DisplayData {
+            filtered_logs: self.filtered_logs.clone(),
+            log_counts: LogCounts::from_logs(&self.all_logs),
+        };
+        self.display_data_tx.publish();
         self.egui_ctx.request_repaint();
 
         Ok(())
@@ -331,15 +332,19 @@ impl DataPrecomputeTask {
         let settings = *self.log_display_settings.read().await;
         let all_logs = &self.all_logs;
 
+        let log_count = LogCounts::from_logs(all_logs);
         let filtered_logs = all_logs
             .iter()
             .filter(|&event| event.level >= settings.level_filter.into())
             .cloned()
             .collect::<VecDeque<_>>();
 
-        *self.egui_log_buffer_rx.input_buffer_mut() = filtered_logs;
+        *self.display_data_tx.input_buffer_mut() = DisplayData {
+            filtered_logs,
+            log_counts: log_count,
+        };
         // Refresh the triple buffer to reflect the new settings
-        self.egui_log_buffer_rx.publish();
+        self.display_data_tx.publish();
         self.egui_ctx.request_repaint();
     }
 }
@@ -357,4 +362,43 @@ impl std::fmt::Display for DataTaskError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "DataTaskError: {}", self.msg)
     }
+}
+#[derive(Debug, Clone, Default)]
+pub struct OculusInternalMetrics {
+    incoming_data_count: u32,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct DisplayData {
+    // Vector of references to the logs that match the current filter
+    // The logs are not actually stored here, so clone is cheap
+    pub filtered_logs: VecDeque<Arc<DashboardEvent>>,
+    pub log_counts: LogCounts,
+}
+
+impl LogCounts {
+    fn from_logs(logs: &VecDeque<Arc<DashboardEvent>>) -> Self {
+        let mut counts = LogCounts::default();
+        for log in logs {
+            match log.level {
+                argus::tracing::oculus::Level::TRACE => counts.trace += 1,
+                argus::tracing::oculus::Level::DEBUG => counts.debug += 1,
+                argus::tracing::oculus::Level::INFO => counts.info += 1,
+                argus::tracing::oculus::Level::WARN => counts.warn += 1,
+                argus::tracing::oculus::Level::ERROR => counts.error += 1,
+            }
+            counts.total += 1;
+        }
+        counts
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct LogCounts {
+    pub total: usize,
+    pub trace: usize,
+    pub debug: usize,
+    pub info: usize,
+    pub warn: usize,
+    pub error: usize,
 }

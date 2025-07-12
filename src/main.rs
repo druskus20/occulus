@@ -7,6 +7,7 @@ pub(crate) mod prelude {
 }
 use std::{
     collections::VecDeque,
+    marker::PhantomData,
     num::NonZeroUsize,
     sync::{Arc, Condvar, Mutex, OnceLock, atomic::AtomicBool},
     thread::JoinHandle,
@@ -14,7 +15,10 @@ use std::{
 
 use self::prelude::*;
 use argus::tracing::oculus::DashboardEvent;
-use data_task::{DataPrecomputeTask, DataTaskCtrl, DataUiBridge, LogAppendBuf, TcpTask};
+use data_task::{
+    DataPrecomputeTask, DataTaskCtrl, DataUiBridge, DisplayData, LogAppendBuf,
+    OculusInternalMetrics, TcpTask,
+};
 use egui::text::LayoutJob;
 use egui_app::LogDisplaySettings;
 use tokio::{
@@ -44,12 +48,20 @@ fn main() -> Result<()> {
     });
 
     let initial_log_display_settings = LogDisplaySettings::default();
-    let (ui_logs_buffer_tx, ui_logs_buffer_rx) = triple_buffer::triple_buffer(&VecDeque::new());
+    let (display_data_tx, display_data_rx) = triple_buffer::triple_buffer(&DisplayData::default());
+    let (metrics_buffer_tx, metrics_buffer_rx) =
+        triple_buffer::triple_buffer(&PhantomData::default());
+    let (metrics_tx, metrics_rx) = triple_buffer::triple_buffer(&PhantomData::<()>::default());
+    let (internal_metrics_tx, internal_metrics_rx) =
+        triple_buffer::triple_buffer(&OculusInternalMetrics::default());
+
     let (to_data, from_ui) = tokio::sync::mpsc::unbounded_channel::<egui_app::UiEvent>();
 
     // TOKIO
     let tokio_thread_handle = run_tokio_thread(
-        ui_logs_buffer_tx,
+        display_data_tx,
+        internal_metrics_tx,
+        metrics_buffer_tx,
         tokio_egui_bridge.clone(),
         initial_log_display_settings,
         from_ui,
@@ -58,7 +70,9 @@ fn main() -> Result<()> {
     // EGUI
     match args.command {
         cli::Command::Launch => egui_app::run_egui(
-            ui_logs_buffer_rx,
+            display_data_rx,
+            internal_metrics_rx,
+            metrics_buffer_rx,
             tokio_egui_bridge,
             initial_log_display_settings,
             to_data,
@@ -75,7 +89,9 @@ fn main() -> Result<()> {
 }
 
 fn run_tokio_thread(
-    ui_log_buffer_tx: triple_buffer::Input<VecDeque<Arc<DashboardEvent>>>,
+    display_data_tx: triple_buffer::Input<DisplayData>,
+    internal_metrics_tx: triple_buffer::Input<OculusInternalMetrics>,
+    metrics_buffer_tx: triple_buffer::Input<PhantomData<()>>,
     tokio_egui_bridge: TokioEguiBridge,
     initial_log_display_settings: LogDisplaySettings,
     from_ui: UnboundedReceiver<egui_app::UiEvent>,
@@ -113,7 +129,7 @@ fn run_tokio_thread(
             let egui_ctx = tokio_egui_bridge.wait_egui_ctx().await;
             let data_ui_bridge = DataUiBridge::new(
                 egui_ctx,
-                ui_log_buffer_tx,
+                display_data_tx,
                 initial_log_display_settings,
                 from_ui,
             );
