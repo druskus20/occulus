@@ -4,8 +4,9 @@ use crate::{
     prelude::*,
 };
 use argus::tracing::oculus::{DashboardEvent, Level};
+use color_eyre::owo_colors::OwoColorize;
 use eframe::egui;
-use egui::text::LayoutJob;
+use egui::{Button, text::LayoutJob};
 use std::marker::PhantomData;
 use tokio::sync::mpsc::UnboundedSender;
 
@@ -13,11 +14,14 @@ use tokio::sync::mpsc::UnboundedSender;
 use egui::{Color32, RichText, ScrollArea, TextFormat as EguiTextFormat, Ui};
 use std::collections::HashMap;
 
-const COLOR_ERROR: Color32 = Color32::from_rgb(255, 0, 0); // red
-const COLOR_WARNING: Color32 = Color32::from_rgb(255, 165, 0); // orange
-const COLOR_INFO: Color32 = Color32::from_rgb(0, 200, 0); // green
-const COLOR_DEBUG: Color32 = Color32::from_rgb(100, 150, 255); // blue
-const COLOR_TRACE: Color32 = Color32::from_rgb(200, 200, 200); // light gray
+const COLOR_ERROR: Color32 = Color32::from_rgb(255, 85, 85); // soft red
+const COLOR_WARNING: Color32 = Color32::from_rgb(255, 204, 0); // amber
+const COLOR_INFO: Color32 = Color32::from_rgb(80, 250, 123); // neon green
+const COLOR_DEBUG: Color32 = Color32::from_rgb(139, 233, 253); // cyan
+const COLOR_TRACE: Color32 = Color32::from_rgb(128, 128, 128); // medium gray
+
+const COLOR_TEXT: Color32 = Color32::from_rgb(255, 255, 255); // white text on dark backgrounds
+const COLOR_TEXT_INV: Color32 = Color32::from_rgb(0, 0, 0); // black text on colored backgrounds
 
 #[derive(Debug, Clone, Copy)]
 pub struct LogDisplaySettings {
@@ -320,9 +324,16 @@ impl eframe::App for EguiApp {
                 ui.label(format!("Total: {}", log_counts.total));
 
                 // Error button
-                let error_button = ui.button(
-                    RichText::new(format!("Error: {}", log_counts.error)).color(COLOR_ERROR),
-                );
+                let mut error_button = Button::new(
+                    RichText::new(format!("Error: {}", log_counts.error)).color(COLOR_TEXT_INV),
+                )
+                .fill(COLOR_ERROR);
+
+                if self.log_display.settings.level_filter == LogLevelFilter::Error {
+                    error_button = error_button.stroke(egui::Stroke::new(1.0, Color32::WHITE));
+                }
+
+                let error_button = ui.add(error_button);
                 if error_button.clicked() {
                     self.log_display.settings.level_filter = LogLevelFilter::Error;
                     self.to_data
@@ -335,9 +346,14 @@ impl eframe::App for EguiApp {
                 }
 
                 // Warn button
-                let warn_button = ui.button(
-                    RichText::new(format!("Warn: {}", log_counts.warn)).color(COLOR_WARNING),
-                );
+                let mut warn_button = Button::new(
+                    RichText::new(format!("Warn: {}", log_counts.warn)).color(COLOR_TEXT_INV),
+                )
+                .fill(COLOR_WARNING);
+                if self.log_display.settings.level_filter == LogLevelFilter::Warn {
+                    warn_button = warn_button.stroke(egui::Stroke::new(1.0, Color32::WHITE));
+                }
+                let warn_button = ui.add(warn_button);
                 if warn_button.clicked() {
                     self.log_display.settings.level_filter = LogLevelFilter::Warn;
                     self.to_data
@@ -350,8 +366,14 @@ impl eframe::App for EguiApp {
                 }
 
                 // Info button
-                let info_button = ui
-                    .button(RichText::new(format!("Info: {}", log_counts.info)).color(COLOR_INFO));
+                let mut info_button = Button::new(
+                    RichText::new(format!("Info: {}", log_counts.info)).color(COLOR_TEXT_INV),
+                )
+                .fill(COLOR_INFO);
+                if self.log_display.settings.level_filter == LogLevelFilter::Info {
+                    info_button = info_button.stroke(egui::Stroke::new(1.0, Color32::WHITE));
+                }
+                let info_button = ui.add(info_button);
                 if info_button.clicked() {
                     self.log_display.settings.level_filter = LogLevelFilter::Info;
                     self.to_data
@@ -364,9 +386,14 @@ impl eframe::App for EguiApp {
                 }
 
                 // Debug button
-                let debug_button = ui.button(
-                    RichText::new(format!("Debug: {}", log_counts.debug)).color(COLOR_DEBUG),
-                );
+                let mut debug_button = Button::new(
+                    RichText::new(format!("Debug: {}", log_counts.debug)).color(COLOR_TEXT_INV),
+                )
+                .fill(COLOR_DEBUG);
+                if self.log_display.settings.level_filter == LogLevelFilter::Debug {
+                    debug_button = debug_button.stroke(egui::Stroke::new(1.0, Color32::WHITE));
+                }
+                let debug_button = ui.add(debug_button);
                 if debug_button.clicked() {
                     self.log_display.settings.level_filter = LogLevelFilter::Debug;
                     self.to_data
@@ -379,9 +406,14 @@ impl eframe::App for EguiApp {
                 }
 
                 // Trace button
-                let trace_button = ui.button(
-                    RichText::new(format!("Trace: {}", log_counts.trace)).color(COLOR_TRACE),
-                );
+                let mut trace_button = Button::new(
+                    RichText::new(format!("Trace: {}", log_counts.trace)).color(COLOR_TEXT_INV),
+                )
+                .fill(COLOR_TRACE);
+                if self.log_display.settings.level_filter == LogLevelFilter::Trace {
+                    trace_button = trace_button.stroke(egui::Stroke::new(1.0, Color32::WHITE));
+                }
+                let trace_button = ui.add(trace_button);
                 if trace_button.clicked() {
                     self.log_display.settings.level_filter = LogLevelFilter::Trace;
                     self.to_data
@@ -393,6 +425,8 @@ impl eframe::App for EguiApp {
                         });
                 }
             });
+
+            ui.separator();
 
             // LOGS
             self.log_display.render_logs(ui, display_data);
