@@ -9,7 +9,7 @@ hermes = { path = "/home/drusk/code/arcana/hermes" }
 spells = { path = "/home/drusk/code/arcana/spells", features = ["ctrl_c"] }
 quill = { path = "/home/drusk/code/arcana/quill" }
 argus = { path = "/home/drusk/code/arcana/argus", features = [
-  "tracy-profiler",
+  #  "tracy-profiler",
   "oculus",
 ] }
 shard-protocol = { path = "/home/drusk/thesis/repos/three/libs/shard-protocol" }

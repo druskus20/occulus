@@ -1,18 +1,19 @@
-use crate::{
-    TokioEguiBridge,
-    data_task::{DisplayData, LogCounts, OculusInternalMetrics},
-    prelude::*,
-};
+use crate::prelude::*;
 use argus::tracing::oculus::{DashboardEvent, Level};
-use color_eyre::owo_colors::OwoColorize;
 use eframe::egui;
-use egui::{Button, text::LayoutJob};
-use std::marker::PhantomData;
+use egui::text::LayoutJob;
 use tokio::sync::mpsc::UnboundedSender;
+use tracing::debug;
+use tracing::error;
+use tracing::info;
+use tracing::trace;
+use tracing::warn;
 
 // Add the tracing log display module
-use egui::{Color32, RichText, ScrollArea, TextFormat as EguiTextFormat, Ui};
+use egui::{Color32, ScrollArea, TextFormat as EguiTextFormat, Ui};
 use std::collections::HashMap;
+use std::collections::VecDeque;
+use std::sync::Arc;
 
 const COLOR_ERROR: Color32 = Color32::from_rgb(255, 85, 85); // soft red
 const COLOR_WARNING: Color32 = Color32::from_rgb(255, 204, 0); // amber
@@ -57,10 +58,10 @@ impl From<LogLevelFilter> for argus::tracing::oculus::Level {
 impl Default for LogDisplaySettings {
     fn default() -> Self {
         Self {
-            show_timestamps: false,
-            show_targets: false,
-            show_file_info: false,
-            show_span_info: false,
+            show_timestamps: true,
+            show_targets: true,
+            show_file_info: true,
+            show_span_info: true,
             auto_scroll: true,
             level_filter: LogLevelFilter::Trace,
         }
@@ -94,7 +95,7 @@ impl TracingLogDisplay {
         &mut self,
         ui: &mut Ui,
         to_data: &UnboundedSender<UiEvent>,
-        display_data: &Vec<LayoutJob>,
+        display_data: &LogCollection,
     ) {
         ui.separator();
 
@@ -168,7 +169,7 @@ impl TracingLogDisplay {
         changed
     }
 
-    fn render_logs(&mut self, ui: &mut Ui, display_data: &Vec<LayoutJob>) {
+    fn render_logs(&mut self, ui: &mut Ui, display_data: &LogCollection) {
         let text_style = egui::TextStyle::Monospace;
         let row_height = ui.text_style_height(&text_style);
 
@@ -181,33 +182,13 @@ impl TracingLogDisplay {
                     // only compute the layout job for the visible rows
                     // TODO: cache the layout jobs - logs dont change unless settings do
                     if let Some(job) = logs.get(row) {
-                        ui.add(egui::Label::new(job.clone()));
+                        // Render the layout job
+                        //ui.label(job.clone());
+                        ui.label(create_layout_job(job, self.settings));
                     }
                 }
             });
     }
-
-    //fn should_show_event(&self, event: &DashboardEvent) -> bool {
-    //    // Level filtering
-    //    if !self.level_matches(&event.level) {
-    //        return false;
-    //    }
-
-    //    true
-    //}
-
-    //fn level_matches(&self, level: &str) -> bool {
-    //    match self.settings.level_filter {
-    //        LogLevelFilter::All => true,
-    //        LogLevelFilter::Trace => true,
-    //        LogLevelFilter::Debug => !level.eq_ignore_ascii_case("trace"),
-    //        LogLevelFilter::Info => {
-    //            matches!(level.to_lowercase().as_str(), "info" | "warn" | "error")
-    //        }
-    //        LogLevelFilter::Warn => matches!(level.to_lowercase().as_str(), "warn" | "error"),
-    //        LogLevelFilter::Error => level.eq_ignore_ascii_case("error"),
-    //    }
-    //}
 }
 
 fn color_for_log_level(level: &Level) -> Color32 {
@@ -250,27 +231,23 @@ fn format_fields(fields: &HashMap<String, String>) -> String {
     formatted
 }
 
-struct EguiApp {
-    tokio_bridge: TokioEguiBridge,
-    display_data_rx: Vec<LayoutJob>,
-    log_display: TracingLogDisplay,
-    metrics: triple_buffer::Output<PhantomData<()>>,
-    internal_metrics: triple_buffer::Output<OculusInternalMetrics>,
-    to_data: UnboundedSender<UiEvent>,
+type LogCollection = Vec<Arc<DashboardEvent>>;
 
+struct EguiApp {
+    data: LogCollection,
+    log_display: TracingLogDisplay,
     benchmark_total_fps: u64,
+
+    display_data_rx: triple_buffer::Output<LogCollection>,
+    display_data_tx: triple_buffer::Input<LogCollection>,
 }
 
 impl EguiApp {
-    fn new(
-        cc: &eframe::CreationContext<'_>,
-        tokio_egui_bridge: TokioEguiBridge,
-        internal_metrics: triple_buffer::Output<OculusInternalMetrics>,
-        metrics: triple_buffer::Output<PhantomData<()>>,
-        initial_settings: LogDisplaySettings,
-        to_data: UnboundedSender<UiEvent>,
-    ) -> Self {
-        let mut display_data_rx = Vec::new();
+    fn new(cc: &eframe::CreationContext<'_>, initial_settings: LogDisplaySettings) -> Self {
+        let (mut display_data_tx, display_data_rx) =
+            triple_buffer::triple_buffer(&LogCollection::new());
+
+        let mut data = Vec::new();
         for i in 0..100_000 {
             let log = DashboardEvent {
                 timestamp: i as u64,
@@ -286,26 +263,30 @@ impl EguiApp {
             };
             let job = create_layout_job(&log, initial_settings);
 
-            display_data_rx.push(job);
+            data.push(Arc::new(log));
         }
+
+        *display_data_tx.input_buffer_mut() = data.clone();
+        display_data_tx.publish();
 
         // register the egui context globally
         let ctx = cc.egui_ctx.clone();
-        tokio_egui_bridge.register_egui_context(ctx);
         Self {
-            tokio_bridge: tokio_egui_bridge,
-            display_data_rx,
+            data,
             log_display: TracingLogDisplay::new(initial_settings),
-            to_data,
-            metrics,
-            internal_metrics,
             benchmark_total_fps: 0,
+            display_data_rx,
+            display_data_tx,
         }
     }
 }
 
+// AAAAA
+
+// AAAAA
 impl eframe::App for EguiApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        info!("EguiApp::update called");
         self.benchmark_total_fps += 1;
 
         egui::CentralPanel::default().show(ctx, |ui| {
@@ -323,166 +304,21 @@ impl eframe::App for EguiApp {
 
             // DISPLAY SETTINGS
             let settings_changed = self.log_display.show_controls(ui);
-            if settings_changed {
-                self.to_data
-                    .send(UiEvent::LogDisplaySettingsChanged(
-                        self.log_display.settings,
-                    ))
-                    .unwrap_or_else(|err| {
-                        error!("Failed to send log display settings change: {err}");
-                    });
-            }
-
-            ui.separator();
-
-            //self.display_data_rx.update();
-            //let display_data = self.display_data_rx.read();
-
-            // LOG COUNTS as colored buttons
-            let log_counts = LogCounts::default();
-            ui.horizontal(|ui| {
-                ui.label("Log Counts:");
-
-                // Total count (non-clickable)
-                ui.label(format!("Total: {}", log_counts.total));
-
-                // Error button
-                let mut error_button = Button::new(
-                    RichText::new(format!("Error: {}", log_counts.error)).color(COLOR_TEXT_INV),
-                )
-                .fill(COLOR_ERROR);
-
-                if self.log_display.settings.level_filter == LogLevelFilter::Error {
-                    error_button = error_button.stroke(egui::Stroke::new(1.0, Color32::WHITE));
-                }
-
-                let error_button = ui.add(error_button);
-                if error_button.clicked() {
-                    self.log_display.settings.level_filter = LogLevelFilter::Error;
-                    self.to_data
-                        .send(UiEvent::LogDisplaySettingsChanged(
-                            self.log_display.settings,
-                        ))
-                        .unwrap_or_else(|err| {
-                            error!("Failed to send log display settings change: {err}");
-                        });
-                }
-
-                // Warn button
-                let mut warn_button = Button::new(
-                    RichText::new(format!("Warn: {}", log_counts.warn)).color(COLOR_TEXT_INV),
-                )
-                .fill(COLOR_WARNING);
-                if self.log_display.settings.level_filter == LogLevelFilter::Warn {
-                    warn_button = warn_button.stroke(egui::Stroke::new(1.0, Color32::WHITE));
-                }
-                let warn_button = ui.add(warn_button);
-                if warn_button.clicked() {
-                    self.log_display.settings.level_filter = LogLevelFilter::Warn;
-                    self.to_data
-                        .send(UiEvent::LogDisplaySettingsChanged(
-                            self.log_display.settings,
-                        ))
-                        .unwrap_or_else(|err| {
-                            error!("Failed to send log display settings change: {err}");
-                        });
-                }
-
-                // Info button
-                let mut info_button = Button::new(
-                    RichText::new(format!("Info: {}", log_counts.info)).color(COLOR_TEXT_INV),
-                )
-                .fill(COLOR_INFO);
-                if self.log_display.settings.level_filter == LogLevelFilter::Info {
-                    info_button = info_button.stroke(egui::Stroke::new(1.0, Color32::WHITE));
-                }
-                let info_button = ui.add(info_button);
-                if info_button.clicked() {
-                    self.log_display.settings.level_filter = LogLevelFilter::Info;
-                    self.to_data
-                        .send(UiEvent::LogDisplaySettingsChanged(
-                            self.log_display.settings,
-                        ))
-                        .unwrap_or_else(|err| {
-                            error!("Failed to send log display settings change: {err}");
-                        });
-                }
-
-                // Debug button
-                let mut debug_button = Button::new(
-                    RichText::new(format!("Debug: {}", log_counts.debug)).color(COLOR_TEXT_INV),
-                )
-                .fill(COLOR_DEBUG);
-                if self.log_display.settings.level_filter == LogLevelFilter::Debug {
-                    debug_button = debug_button.stroke(egui::Stroke::new(1.0, Color32::WHITE));
-                }
-                let debug_button = ui.add(debug_button);
-                if debug_button.clicked() {
-                    self.log_display.settings.level_filter = LogLevelFilter::Debug;
-                    self.to_data
-                        .send(UiEvent::LogDisplaySettingsChanged(
-                            self.log_display.settings,
-                        ))
-                        .unwrap_or_else(|err| {
-                            error!("Failed to send log display settings change: {err}");
-                        });
-                }
-
-                // Trace button
-                let mut trace_button = Button::new(
-                    RichText::new(format!("Trace: {}", log_counts.trace)).color(COLOR_TEXT_INV),
-                )
-                .fill(COLOR_TRACE);
-                if self.log_display.settings.level_filter == LogLevelFilter::Trace {
-                    trace_button = trace_button.stroke(egui::Stroke::new(1.0, Color32::WHITE));
-                }
-                let trace_button = ui.add(trace_button);
-                if trace_button.clicked() {
-                    self.log_display.settings.level_filter = LogLevelFilter::Trace;
-                    self.to_data
-                        .send(UiEvent::LogDisplaySettingsChanged(
-                            self.log_display.settings,
-                        ))
-                        .unwrap_or_else(|err| {
-                            error!("Failed to send log display settings change: {err}");
-                        });
-                }
-            });
-
             ui.separator();
 
             // LOGS
-            self.log_display.render_logs(ui, &self.display_data_rx);
+            self.log_display
+                .render_logs(ui, self.display_data_rx.read());
         });
-    }
-
-    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
-        self.tokio_bridge.cancel();
     }
 }
 
-pub fn run_egui(
-    display_data_rx: triple_buffer::Output<DisplayData>,
-    internal_metrics: triple_buffer::Output<OculusInternalMetrics>,
-    metrics: triple_buffer::Output<PhantomData<()>>,
-    tokio_egui_bridge: TokioEguiBridge,
-    initial_settings: LogDisplaySettings,
-    to_data: UnboundedSender<UiEvent>,
-) -> Result<()> {
+pub fn run_egui() -> Result<()> {
     let native_options = eframe::NativeOptions::default();
     eframe::run_native(
         "Tracing Log Viewer",
         native_options,
-        Box::new(|cc| {
-            Ok(Box::new(EguiApp::new(
-                cc,
-                tokio_egui_bridge,
-                internal_metrics,
-                metrics,
-                initial_settings,
-                to_data,
-            )))
-        }),
+        Box::new(|cc| Ok(Box::new(EguiApp::new(cc, Default::default())))),
     )
     .expect("Failed to launch eframe app");
     Ok(())

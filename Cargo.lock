@@ -3689,7 +3689,6 @@ version = "0.18.0"
 dependencies = [
  "loom",
  "once_cell",
- "rustc-demangle",
  "tracy-client-sys",
 ]
 
