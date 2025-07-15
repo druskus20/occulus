@@ -107,7 +107,7 @@ fn run_tokio_thread(
         let rt = Builder::new_multi_thread()
             .enable_io()
             .enable_time()
-            .worker_threads(num_cpus - 1)
+            .worker_threads(num_cpus - 8)
             .build()
             .expect("Failed to create tokio runtime");
 
@@ -146,24 +146,6 @@ fn run_tokio_thread(
                 tokio::task::spawn(async move {
                     info!("MOCK_DATA is enabled, spawning mock data task");
                     let mut display_data = DisplayData::default();
-
-                    for i in 0..10000 {
-                        info!("Adding mock log {}", i);
-                        let log = DashboardEvent {
-                            event_type: "log".to_string(),
-                            timestamp: 0,
-                            message: format!("Mock log message {i}"),
-                            level: argus::tracing::oculus::Level::TRACE,
-                            span_id: Some(i as u64),
-                            parent_span_id: None,
-                            fields: Default::default(),
-                            target: "mock_target".to_string(),
-                            file: Some("mock_file.rs".to_string()),
-                            line: Some(42),
-                        };
-                        let log = Arc::new(log);
-                        display_data.filtered_logs.push_back(log);
-                    }
 
                     *display_data_tx.input_buffer_mut() = DisplayData {
                         filtered_logs: display_data.filtered_logs,

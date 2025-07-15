@@ -181,7 +181,7 @@ impl TracingLogDisplay {
                     // only compute the layout job for the visible rows
                     // TODO: cache the layout jobs - logs dont change unless settings do
                     if let Some(job) = logs.get(row) {
-                        ui.add(egui::Label::new(job));
+                        ui.add(egui::Label::new(job.clone()));
                     }
                 }
             });
@@ -306,7 +306,6 @@ impl EguiApp {
 
 impl eframe::App for EguiApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        info!("EguiApp::update called");
         self.benchmark_total_fps += 1;
 
         egui::CentralPanel::default().show(ctx, |ui| {
