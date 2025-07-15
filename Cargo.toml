@@ -8,10 +8,7 @@ glados = { path = "/home/drusk/code/arcana/glados" }
 hermes = { path = "/home/drusk/code/arcana/hermes" }
 spells = { path = "/home/drusk/code/arcana/spells", features = ["ctrl_c"] }
 quill = { path = "/home/drusk/code/arcana/quill" }
-argus = { path = "/home/drusk/code/arcana/argus", features = [
-  "tracy-profiler",
-  "oculus",
-] }
+argus = { path = "/home/drusk/code/arcana/argus", features = ["oculus"] }
 shard-protocol = { path = "/home/drusk/thesis/repos/three/libs/shard-protocol" }
 three-utils = { path = "/home/drusk/thesis/repos/three/libs/three-utils" }
 
@@ -49,3 +46,7 @@ serde_json = "1.0"
 eframe = { version = "0.31" }
 egui = { version = "0.31" }
 chrono = { version = "0.4", features = ["serde"] }
+
+[features]
+tracy-profiler = ["argus/tracy-profiler"]
+default = []

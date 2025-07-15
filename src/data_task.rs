@@ -1,5 +1,5 @@
-use crate::egui_app::{self, LogDisplaySettings, UiEvent, create_layout_job};
-use crate::prelude::*;
+use crate::egui_app::UiEvent;
+use crate::{BackendSide, prelude::*};
 use argus::tracing::oculus::DashboardEvent;
 use egui::mutex::Mutex;
 use std::collections::VecDeque;
@@ -9,7 +9,6 @@ use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::net::TcpListener;
 use tokio::net::TcpStream;
-use tokio::sync::RwLock;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
@@ -18,7 +17,7 @@ use tracing::{error, info};
 use std::mem;
 
 pub struct LogAppendBuf<T> {
-    inner: Arc<Mutex<VecDeque<T>>>,
+    phantom: std::marker::PhantomData<T>,
 }
 
 #[derive(Clone)]
@@ -34,7 +33,7 @@ pub struct LogAppendBufReader<T> {
 }
 
 impl<T> LogAppendBuf<T> {
-    pub fn new() -> (LogAppendBufWriter<T>, LogAppendBufReader<T>) {
+    pub fn split() -> (LogAppendBufWriter<T>, LogAppendBufReader<T>) {
         let inner = Arc::new(Mutex::new(VecDeque::new()));
         (
             LogAppendBufWriter {
@@ -50,6 +49,8 @@ impl<T> LogAppendBufWriter<T> {
         let mut guard = self.inner.lock();
         guard.push_back(item);
     }
+
+    #[allow(unused)]
     pub fn push_batch(&self, items: impl IntoIterator<Item = T>) {
         let mut guard = self.inner.lock();
         guard.extend(items);
@@ -73,26 +74,27 @@ impl<T> LogAppendBufReader<T> {
 pub struct DataPrecomputeTask {
     incoming_logs_buffer: LogAppendBufReader<Arc<DashboardEvent>>,
 
-    // TODO!!!!!!!! - we need to distinghish between "all the logs" and the "logs to display"
-    // (which match the filter). Both buffers need to be updated whenever the tick happens.
-    // The filtered logs are updated when the filters change.
-    all_logs: VecDeque<Arc<DashboardEvent>>,
-    // Logs to display, a reference to the logs that match the current filter
-    filtered_logs: VecDeque<Arc<DashboardEvent>>,
-    display_data_tx: triple_buffer::Input<DisplayData>,
+    /// All logs, kept in memory for the lifetime of the task
+    all_logs: LogCollection,
+    /// Filtered logs, matching the current filter. These are the logs that will be displayed in
+    /// the UI.
+    ///
+    /// TODO: this might be redundant with the display_data_tx (in backend)
+    filtered_logs: LogCollection,
 
-    data_task_ctrl: UnboundedReceiver<DataTaskCtrl>,
+    ctrl_rx: UnboundedReceiver<DataTaskCtrl>,
 
-    from_ui: UnboundedReceiver<UiEvent>,
-    log_display_settings: RwLock<LogDisplaySettings>,
+    backend: BackendSide,
     egui_ctx: egui::Context,
+    #[allow(unused)]
     cancel: CancellationToken,
 }
 
 pub struct TcpTask {
-    cancel: CancellationToken,
     data_task_ctrl_tx: UnboundedSender<DataTaskCtrl>,
     incoming_logs_writer: LogAppendBufWriter<Arc<DashboardEvent>>,
+    #[allow(unused)]
+    cancel: CancellationToken,
 }
 
 pub enum DataTaskCtrl {
@@ -153,70 +155,53 @@ impl TcpTask {
     }
 }
 
-#[derive(Debug)]
-pub struct DataUiBridge {
-    /// Shared buffer to publish logs to the EGUI context
-    display_data_tx: triple_buffer::Input<DisplayData>,
-    /// Initial log display settings (controlled by the UI)
-    log_display_settings: LogDisplaySettings,
-    /// Receiver for events from the UI
-    from_ui: UnboundedReceiver<egui_app::UiEvent>,
-
-    /// Tokio <-> EGUI bridge to handle EGUI context initialization and cancellation
-    egui_ctx: egui::Context,
-    /// Cancellation token to signal task cancellation
-    cancel: CancellationToken,
-}
-
-impl DataUiBridge {
-    pub fn new(
-        egui_ctx: egui::Context,
-        display_data_tx: triple_buffer::Input<DisplayData>,
-        log_display_settings: LogDisplaySettings,
-        from_ui: UnboundedReceiver<egui_app::UiEvent>,
-    ) -> Self {
-        Self {
-            display_data_tx,
-            log_display_settings,
-            from_ui,
-            egui_ctx,
-            cancel: CancellationToken::new(),
-        }
-    }
-}
+//#[derive(Debug)]
+//pub struct DataUiBridge {
+//    /// Shared buffer to publish logs to the EGUI context
+//    //display_data_tx: triple_buffer::Input<DisplayData>,
+//    /// Initial log display settings (controlled by the UI)
+//    //log_display_settings: LogDisplaySettings,
+//    /// Receiver for events from the UI
+//    //from_ui: UnboundedReceiver<egui_app::UiEvent>,
+//    backend: BackendSide,
+//    /// Tokio <-> EGUI bridge to handle EGUI context initialization and cancellation
+//    egui_ctx: egui::Context,
+//    /// Cancellation token to signal task cancellation
+//    cancel: CancellationToken,
+//}
+//
+//impl DataUiBridge {
+//    pub fn new(egui_ctx: egui::Context, backend: BackendSide) -> Self {
+//        Self {
+//            egui_ctx,
+//            backend,
+//            cancel: CancellationToken::new(),
+//        }
+//    }
+//}
 
 impl DataPrecomputeTask {
     pub fn new(
-        cancel: CancellationToken,
+        backend: BackendSide,
+        egui_ctx: egui::Context,
         data_task_ctrl: UnboundedReceiver<DataTaskCtrl>,
         incoming_logs_buffer: LogAppendBufReader<Arc<DashboardEvent>>,
-        data_ui_bridge: DataUiBridge,
+        cancel: CancellationToken,
     ) -> Self {
         Self {
             all_logs: VecDeque::new(),
             filtered_logs: VecDeque::new(),
             incoming_logs_buffer,
-            data_task_ctrl,
-            from_ui: data_ui_bridge.from_ui,
-            log_display_settings: RwLock::new(data_ui_bridge.log_display_settings),
-            egui_ctx: data_ui_bridge.egui_ctx.clone(),
-            display_data_tx: data_ui_bridge.display_data_tx,
-            cancel: data_ui_bridge.cancel.clone(),
-        }
-    }
-
-    async fn data_ui_bridge(self) -> DataUiBridge {
-        DataUiBridge {
-            display_data_tx: self.display_data_tx,
-            log_display_settings: *self.log_display_settings.read().await,
-            from_ui: self.from_ui,
-            egui_ctx: self.egui_ctx.clone(),
-            cancel: self.cancel.clone(),
+            ctrl_rx: data_task_ctrl,
+            egui_ctx,
+            backend,
+            cancel,
         }
     }
 
     /// Starts running once a `DataTaskCtrl::Start` message is received. (by the TCP task)
-    pub fn spawn(mut self) -> JoinHandle<std::result::Result<DataUiBridge, DataTaskError>> {
+    /// Returns the BackendSide, which can be reused for another connection later on.
+    pub fn spawn(mut self) -> JoinHandle<std::result::Result<BackendSide, DataTaskError>> {
         const TICK_INTERVAL_MS: u64 = 100;
         let mut timer = tokio::time::interval(Duration::from_millis(u64::MAX));
         let mut timer_enabled = true; // Start with timer enabled
@@ -224,7 +209,7 @@ impl DataPrecomputeTask {
         tokio::task::spawn(async move {
             loop {
                 tokio::select! {
-                    r = self.data_task_ctrl.recv() => {
+                    r = self.ctrl_rx.recv() => {
                         match r {
                             Some(DataTaskCtrl::StopTimer) => {
                                 info!("Received DataTaskCtrl::Stop, disabling timer");
@@ -239,11 +224,11 @@ impl DataPrecomputeTask {
                             }
                             None => {
                                 info!("DataTaskCtrl channel closed, exiting loop");
-                                return Ok(self.data_ui_bridge().await);
+                                return Ok(self.backend);
                             }
                         }
                     },
-                    r = self.from_ui.recv() => {
+                    r = self.backend.from_frontend.recv() => {
                         match r {
                             Some(event) => {
                                 trace!("Received UI event: {:?}", event);
@@ -251,7 +236,7 @@ impl DataPrecomputeTask {
                             }
                             None => {
                                 info!("UI event channel closed, exiting loop");
-                                return Ok(self.data_ui_bridge().await);
+                                return Ok(self.backend);
                             }
                         }
                     },
@@ -262,7 +247,7 @@ impl DataPrecomputeTask {
                                 error!("Failed to publish new logs: {:?}", e);
                                 return Err(DataTaskError {
                                     msg: format!("Failed to publish new logs: {e:?}"),
-                                    _owned_data_ui_bridge: self.data_ui_bridge().await,
+                                    backend: self.backend,
                                 });
                             }
                         }
@@ -271,11 +256,12 @@ impl DataPrecomputeTask {
             }
         })
     }
+
     // publush new logs to the EGUI context
     #[tracing::instrument(skip_all)]
     pub async fn publish_new_logs(&mut self) -> Result<()> {
         trace!("Publishing new logs to EGUI context");
-        let log_display_settings = *self.log_display_settings.read().await;
+        let log_display_settings = self.backend.settings;
 
         // Process new logs from the tcp task
         // order here avoids unnecessary clone
@@ -306,12 +292,13 @@ impl DataPrecomputeTask {
             filtered_new_logs.len()
         );
         self.filtered_logs.extend(filtered_new_logs);
+
         // All the logs - we cannot extend, becasue how triple_buffer is implemented
-        *self.display_data_tx.input_buffer_mut() = DisplayData {
+        *self.backend.data_buffer_tx.input_buffer_mut() = DisplayData {
             filtered_logs: self.filtered_logs.clone(),
             log_counts: LogCounts::from_logs(&self.all_logs),
         };
-        self.display_data_tx.publish();
+        self.backend.data_buffer_tx.publish();
         self.egui_ctx.request_repaint();
 
         Ok(())
@@ -320,31 +307,29 @@ impl DataPrecomputeTask {
     async fn handle_ui_event(&mut self, event: UiEvent) {
         match event {
             UiEvent::LogDisplaySettingsChanged(new_settings) => {
-                *self.log_display_settings.write().await = new_settings;
+                self.backend.settings = new_settings;
                 self.filter_and_refresh_egui_buf().await;
             }
         }
-        info!("UI message handler disconnected, exiting loop");
     }
 
     async fn filter_and_refresh_egui_buf(&mut self) {
         info!("Refreshing EGUI buffer");
-        let settings = *self.log_display_settings.read().await;
         let all_logs = &self.all_logs;
 
         let log_count = LogCounts::from_logs(all_logs);
         let filtered_logs = all_logs
             .iter()
-            .filter(|&event| event.level >= settings.level_filter.into())
+            .filter(|&event| event.level >= self.backend.settings.level_filter.into())
             .cloned()
             .collect::<VecDeque<_>>();
 
-        *self.display_data_tx.input_buffer_mut() = DisplayData {
+        *self.backend.data_buffer_tx.input_buffer_mut() = DisplayData {
             filtered_logs,
             log_counts: log_count,
         };
         // Refresh the triple buffer to reflect the new settings
-        self.display_data_tx.publish();
+        self.backend.data_buffer_tx.publish();
         self.egui_ctx.request_repaint();
     }
 }
@@ -354,7 +339,8 @@ pub struct DataTaskError {
     msg: String,
     /// Passes the ownerhip back in case of an error so that it can be reused for another
     /// connection later on
-    _owned_data_ui_bridge: DataUiBridge,
+    #[allow(unused)]
+    backend: BackendSide,
 }
 
 impl Error for DataTaskError {}
@@ -363,21 +349,19 @@ impl std::fmt::Display for DataTaskError {
         write!(f, "DataTaskError: {}", self.msg)
     }
 }
-#[derive(Debug, Clone, Default)]
-pub struct OculusInternalMetrics {
-    incoming_data_count: u32,
-}
+
+type LogCollection = VecDeque<Arc<DashboardEvent>>;
 
 #[derive(Debug, Clone, Default)]
 pub struct DisplayData {
     // Vector of references to the logs that match the current filter
     // The logs are not actually stored here, so clone is cheap
-    pub filtered_logs: VecDeque<Arc<DashboardEvent>>,
+    pub filtered_logs: LogCollection,
     pub log_counts: LogCounts,
 }
 
 impl LogCounts {
-    fn from_logs(logs: &VecDeque<Arc<DashboardEvent>>) -> Self {
+    fn from_logs(logs: &LogCollection) -> Self {
         let mut counts = LogCounts::default();
         for log in logs {
             match log.level {

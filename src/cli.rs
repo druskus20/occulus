@@ -50,6 +50,7 @@ impl ParsedArgs {
                 file: true,
                 output: argus::tracing::Output::Stdout,
                 error_layer: false, // Error layer does not work with egui well
+                tracy_layer: false,
                 ..Default::default()
             },
         }

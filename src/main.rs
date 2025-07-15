@@ -5,40 +5,34 @@ pub(crate) mod prelude {
     pub(crate) use color_eyre::eyre::eyre;
     pub(crate) use tracing::{debug, error, info, trace, warn};
 }
-use std::{
-    collections::VecDeque,
-    marker::PhantomData,
-    num::NonZeroUsize,
-    sync::{Arc, Condvar, Mutex, OnceLock, atomic::AtomicBool},
-    thread::JoinHandle,
-};
 
 use self::prelude::*;
-use argus::tracing::oculus::DashboardEvent;
-use data_task::{
-    DataPrecomputeTask, DataTaskCtrl, DataUiBridge, DisplayData, LogAppendBuf,
-    OculusInternalMetrics, TcpTask,
-};
-use egui::text::LayoutJob;
-use egui_app::LogDisplaySettings;
-use tokio::{
-    runtime::Builder,
-    sync::{Notify, mpsc::UnboundedReceiver},
-};
-use tokio_util::sync::CancellationToken;
+use async_rt::TokioEguiBridge;
+use data_task::{DataPrecomputeTask, DataTaskCtrl, DisplayData, LogAppendBuf, TcpTask};
+use egui_app::{LogDisplaySettings, UiEvent};
+use tokio::sync::mpsc::unbounded_channel;
 use tracing::{info, warn};
+use triple_buffer::triple_buffer;
+
+mod async_rt;
 mod cli;
 mod data_task;
 pub mod egui_app;
+mod oneshot_notify;
 
 fn main() -> Result<()> {
+    // Init stuff
     color_eyre::install()?;
-    let args = cli::ParsedArgs::parse_raw();
-    quill::init(args.tracing_options.color);
-    let _guard = argus::tracing::setup_tracing(&args.tracing_options);
-    info!("Ocular started with args: {:#?}", args);
+    let args = cli::ParsedArgs::parse_raw(); // cli args
+    quill::init(args.tracing_options.color); // color logging utilities
+    let _guard = argus::tracing::setup_tracing(&args.tracing_options); // tracing
 
+    // This piece links together Egui and Tokio. It does several things:
+    // 1) Startup syncronization - once Egui is ready it gives a reference to the Egui context to Tokio.
+    // 3) Cancellation both ways - the GUI can cancel the tokio tasks, and the ctrl-c handler can cancel the GUI.
     let tokio_egui_bridge = TokioEguiBridge::new();
+
+    // Cancellation
     spells::ctrl_c::install_ctrlc_handler_f({
         let tokio_egui_bridge = tokio_egui_bridge.clone();
         move || {
@@ -47,38 +41,20 @@ fn main() -> Result<()> {
         }
     });
 
-    let initial_log_display_settings = LogDisplaySettings::default();
-    let (display_data_tx, display_data_rx) = triple_buffer::triple_buffer(&DisplayData::default());
-    let (metrics_buffer_tx, metrics_buffer_rx) =
-        triple_buffer::triple_buffer(&PhantomData::default());
-    let (metrics_tx, metrics_rx) = triple_buffer::triple_buffer(&PhantomData::<()>::default());
-    let (internal_metrics_tx, internal_metrics_rx) =
-        triple_buffer::triple_buffer(&OculusInternalMetrics::default());
+    let (frontend, backend) = FrontendBackendComm::split();
 
-    let (to_data, from_ui) = tokio::sync::mpsc::unbounded_channel::<egui_app::UiEvent>();
+    // TOKIO - Background threads
+    let tokio_thread_handle = {
+        let tokio_egui_bridge = tokio_egui_bridge.clone(); // take ownership 
+        async_rt::start(async move { run_backend(backend, tokio_egui_bridge).await })
+    };
 
-    // TOKIO
-    let tokio_thread_handle = run_tokio_thread(
-        display_data_tx,
-        internal_metrics_tx,
-        metrics_buffer_tx,
-        tokio_egui_bridge.clone(),
-        initial_log_display_settings,
-        from_ui,
-    );
-
-    // EGUI
+    // EGUI - Main thread
     match args.command {
-        cli::Command::Launch => egui_app::run_egui(
-            display_data_rx,
-            internal_metrics_rx,
-            metrics_buffer_rx,
-            tokio_egui_bridge,
-            initial_log_display_settings,
-            to_data,
-        ),
-    }?;
+        cli::Command::Launch => egui_app::run_egui(frontend, tokio_egui_bridge.clone())?,
+    };
 
+    // Join the tokio threads
     tokio_thread_handle
         .join()
         .map_err(|e| eyre!("Tokio thread panicked: {:?}", e))?;
@@ -88,173 +64,73 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-fn run_tokio_thread(
-    display_data_tx: triple_buffer::Input<DisplayData>,
-    internal_metrics_tx: triple_buffer::Input<OculusInternalMetrics>,
-    metrics_buffer_tx: triple_buffer::Input<PhantomData<()>>,
-    tokio_egui_bridge: TokioEguiBridge,
-    initial_log_display_settings: LogDisplaySettings,
-    from_ui: UnboundedReceiver<egui_app::UiEvent>,
-) -> JoinHandle<()> {
-    std::thread::spawn(move || {
-        // default number of threads in the system -1
-        let num_cpus = std::thread::available_parallelism().map_or(1, NonZeroUsize::get);
-        info!(
-            "Using {} - {} worker threads for the tokio runtime",
-            { num_cpus },
-            { 1 }
-        );
-        let rt = Builder::new_multi_thread()
-            .enable_io()
-            .enable_time()
-            .worker_threads(num_cpus - 1)
-            .build()
-            .expect("Failed to create tokio runtime");
+// Frontend and backend communication
+// 1) It allows the background tokio tasks to publish data to the GUI
+// 2) it allos the GUI to send events to the tokio tasks (i.e. Settings changed, start/stop...)
+struct FrontendBackendComm {}
 
-        rt.block_on(async {
-            // Communication between tasks
-            let (data_task_ctrl_tx, data_task_ctrl_rx) =
-                tokio::sync::mpsc::unbounded_channel::<DataTaskCtrl>();
-            let (incoming_logs_writer, incoming_logs_reader) = LogAppendBuf::new();
+impl FrontendBackendComm {
+    fn split() -> (FrontendSide, BackendSide) {
+        let (data_buffer_tx, data_buffer_rx) = triple_buffer(&DisplayData::default());
+        let (to_backend, from_frontend) = unbounded_channel::<UiEvent>();
+        let initial_settings = LogDisplaySettings::default();
 
-            // TCP TASK
-            let _tcp_task = TcpTask::new(
-                tokio_egui_bridge.cancel_token(),
-                data_task_ctrl_tx,
-                incoming_logs_writer,
-            )
-            .spawn();
-
-            // DATA TASK
-            let egui_ctx = tokio_egui_bridge.wait_egui_ctx().await;
-            let data_ui_bridge = DataUiBridge::new(
-                egui_ctx,
-                display_data_tx,
-                initial_log_display_settings,
-                from_ui,
-            );
-            let _data_precompute_task_handle = DataPrecomputeTask::new(
-                tokio_egui_bridge.cancel_token(),
-                data_task_ctrl_rx,
-                incoming_logs_reader,
-                data_ui_bridge,
-            )
-            .spawn();
-
-            // Cancel
-            let cancel = tokio_egui_bridge.cancelled_fut();
-            tokio::select! {
-                // You can add other async tasks here if needed
-                _ = cancel => {
-                    warn!("Tokio task cancelled, shutting down...");
-                },
-            };
-        });
-    })
+        (
+            FrontendSide {
+                data_buffer_rx,
+                to_backend,
+                settings: initial_settings,
+            },
+            BackendSide {
+                data_buffer_tx,
+                from_frontend,
+                settings: initial_settings,
+            },
+        )
+    }
 }
 
-#[derive(Debug, Clone)]
-pub struct TokioEguiBridge {
-    egui_ctx: Arc<std::sync::OnceLock<egui::Context>>,
-    egui_ctx_available: Arc<OneshotNotify>,
-    cancel: CancellationToken,
-}
-
-/// Like a notify that keeps returning true once it has been notified
 #[derive(Debug)]
-struct OneshotNotify {
-    flag: AtomicBool,
-    notify: Notify,
-    condvar: (Mutex<bool>, Condvar),
+pub struct FrontendSide {
+    pub data_buffer_rx: triple_buffer::Output<DisplayData>,
+    pub to_backend: tokio::sync::mpsc::UnboundedSender<UiEvent>,
+    pub settings: LogDisplaySettings,
 }
 
-impl OneshotNotify {
-    fn new() -> Self {
-        Self {
-            flag: AtomicBool::new(false),
-            notify: Notify::new(),
-            condvar: (Mutex::new(false), Condvar::new()),
-        }
-    }
-
-    fn notify(&self) {
-        if !self.flag.swap(true, std::sync::atomic::Ordering::AcqRel) {
-            let (lock, cvar) = &self.condvar;
-            let mut notified = lock.lock().unwrap();
-            *notified = true;
-            // sync notify
-            cvar.notify_all();
-            // async notify
-            self.notify.notify_waiters();
-        }
-    }
-
-    async fn wait(&self) {
-        info!("Waiting for egui ctx");
-        // if already notified once, return immediately
-        if self.flag.load(std::sync::atomic::Ordering::Acquire) {
-            return;
-        }
-        self.notify.notified().await;
-        info!("Egui ctx is available now");
-    }
-
-    fn wait_blocking(&self) {
-        // if already notified once, return immediately
-        if self.flag.load(std::sync::atomic::Ordering::Acquire) {
-            return;
-        }
-        // wait on the condition variable
-        let (lock, cvar) = &self.condvar;
-        let mut notified = lock.lock().unwrap();
-        while !*notified {
-            notified = cvar.wait(notified).unwrap();
-        }
-    }
+#[derive(Debug)]
+pub struct BackendSide {
+    pub data_buffer_tx: triple_buffer::Input<DisplayData>,
+    pub from_frontend: tokio::sync::mpsc::UnboundedReceiver<UiEvent>,
+    pub settings: LogDisplaySettings,
 }
 
-impl TokioEguiBridge {
-    fn new() -> Self {
-        Self {
-            egui_ctx: Arc::new(OnceLock::new()),
-            egui_ctx_available: Arc::new(OneshotNotify::new()),
-            cancel: CancellationToken::new(),
-        }
-    }
+async fn run_backend(backend: BackendSide, tokio_egui_bridge: TokioEguiBridge) {
+    let cancel = tokio_egui_bridge.cancel_token();
 
-    fn register_egui_context(&self, ctx: egui::Context) {
-        info!("Registering Egui context");
-        self.egui_ctx.set(ctx).expect("Egui context already set");
-        info!("Egui context registered successfully");
-        self.egui_ctx_available.notify();
-    }
+    // Communication between tasks
+    let (to_data_ctrl, from_tcp_ctrl) = unbounded_channel::<DataTaskCtrl>(); // ctrl
+    let (incoming_logs_tx, incoming_logs_rx) = LogAppendBuf::split(); // logs
 
-    async fn wait_egui_ctx(&self) -> egui::Context {
-        self.egui_ctx_available.wait().await;
-        self.egui_ctx.get().expect("Egui context not set").clone()
-    }
+    // TCP TASK
+    let _tcp_task = TcpTask::new(cancel.clone(), to_data_ctrl, incoming_logs_tx).spawn();
 
-    fn wait_egui_ctx_blocking(&self) -> egui::Context {
-        self.egui_ctx_available.wait_blocking();
-        self.egui_ctx.get().expect("Egui context not set").clone()
-    }
+    // DATA TASK
+    // Wait for egui to be initialized
+    let egui_ctx = tokio_egui_bridge.wait_egui_ctx().await;
+    let _data_precompute_task_handle = DataPrecomputeTask::new(
+        backend,
+        egui_ctx,
+        from_tcp_ctrl,
+        incoming_logs_rx,
+        cancel.clone(),
+    )
+    .spawn();
 
-    // resturns a future that resolves when the tokio task is cancelled
-    fn cancelled_fut(&self) -> impl futures::Future<Output = ()> {
-        self.cancel.cancelled()
-    }
-
-    fn cancel_token(&self) -> CancellationToken {
-        self.cancel.clone()
-    }
-
-    fn cancel(&self) {
-        self.cancel.cancel();
-        match self.egui_ctx.get() {
-            Some(ctx) => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
-            None => {
-                warn!("Egui context not set, cannot send close command.");
-            }
-        }
-    }
+    // Cancel
+    let cancel = tokio_egui_bridge.cancelled_fut();
+    tokio::select! {
+        _ = cancel => {
+            warn!("Tokio task cancelled, shutting down...");
+        },
+    };
 }
