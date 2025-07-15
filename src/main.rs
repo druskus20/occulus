@@ -16,10 +16,10 @@ use std::{
 use self::prelude::*;
 use argus::tracing::oculus::DashboardEvent;
 use data_task::{
-    DataPrecomputeTask, DataTaskCtrl, DataUiBridge, DisplayData, LogAppendBuf,
+    DataPrecomputeTask, DataTaskCtrl, DataUiBridge, DisplayData, LogAppendBuf, LogCounts,
     OculusInternalMetrics, TcpTask,
 };
-use egui::text::LayoutJob;
+use egui::{ahash::HashMap, text::LayoutJob};
 use egui_app::LogDisplaySettings;
 use tokio::{
     runtime::Builder,
@@ -89,7 +89,7 @@ fn main() -> Result<()> {
 }
 
 fn run_tokio_thread(
-    display_data_tx: triple_buffer::Input<DisplayData>,
+    mut display_data_tx: triple_buffer::Input<DisplayData>,
     internal_metrics_tx: triple_buffer::Input<OculusInternalMetrics>,
     metrics_buffer_tx: triple_buffer::Input<PhantomData<()>>,
     tokio_egui_bridge: TokioEguiBridge,
@@ -117,29 +117,61 @@ fn run_tokio_thread(
                 tokio::sync::mpsc::unbounded_channel::<DataTaskCtrl>();
             let (incoming_logs_writer, incoming_logs_reader) = LogAppendBuf::new();
 
-            // TCP TASK
-            let _tcp_task = TcpTask::new(
-                tokio_egui_bridge.cancel_token(),
-                data_task_ctrl_tx,
-                incoming_logs_writer,
-            )
-            .spawn();
+            const MOCK_DATA: bool = true;
+            if !MOCK_DATA {
+                // TCP TASK
+                let _tcp_task = TcpTask::new(
+                    tokio_egui_bridge.cancel_token(),
+                    data_task_ctrl_tx,
+                    incoming_logs_writer,
+                )
+                .spawn();
 
-            // DATA TASK
-            let egui_ctx = tokio_egui_bridge.wait_egui_ctx().await;
-            let data_ui_bridge = DataUiBridge::new(
-                egui_ctx,
-                display_data_tx,
-                initial_log_display_settings,
-                from_ui,
-            );
-            let _data_precompute_task_handle = DataPrecomputeTask::new(
-                tokio_egui_bridge.cancel_token(),
-                data_task_ctrl_rx,
-                incoming_logs_reader,
-                data_ui_bridge,
-            )
-            .spawn();
+                // DATA TASK
+                let egui_ctx = tokio_egui_bridge.wait_egui_ctx().await;
+                let data_ui_bridge = DataUiBridge::new(
+                    egui_ctx,
+                    display_data_tx,
+                    initial_log_display_settings,
+                    from_ui,
+                );
+                let _data_precompute_task_handle = DataPrecomputeTask::new(
+                    tokio_egui_bridge.cancel_token(),
+                    data_task_ctrl_rx,
+                    incoming_logs_reader,
+                    data_ui_bridge,
+                )
+                .spawn();
+            } else {
+                tokio::task::spawn(async move {
+                    info!("MOCK_DATA is enabled, spawning mock data task");
+                    let mut display_data = DisplayData::default();
+
+                    for i in 0..10000 {
+                        info!("Adding mock log {}", i);
+                        let log = DashboardEvent {
+                            event_type: "log".to_string(),
+                            timestamp: 0,
+                            message: format!("Mock log message {i}"),
+                            level: argus::tracing::oculus::Level::TRACE,
+                            span_id: Some(i as u64),
+                            parent_span_id: None,
+                            fields: Default::default(),
+                            target: "mock_target".to_string(),
+                            file: Some("mock_file.rs".to_string()),
+                            line: Some(42),
+                        };
+                        let log = Arc::new(log);
+                        display_data.filtered_logs.push_back(log);
+                    }
+
+                    *display_data_tx.input_buffer_mut() = DisplayData {
+                        filtered_logs: display_data.filtered_logs,
+                        log_counts: LogCounts::default(),
+                    };
+                    display_data_tx.publish();
+                });
+            }
 
             // Cancel
             let cancel = tokio_egui_bridge.cancelled_fut();

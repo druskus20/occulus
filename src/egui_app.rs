@@ -1,6 +1,6 @@
 use crate::{
     TokioEguiBridge,
-    data_task::{DisplayData, OculusInternalMetrics},
+    data_task::{DisplayData, LogCounts, OculusInternalMetrics},
     prelude::*,
 };
 use argus::tracing::oculus::{DashboardEvent, Level};
@@ -94,7 +94,7 @@ impl TracingLogDisplay {
         &mut self,
         ui: &mut Ui,
         to_data: &UnboundedSender<UiEvent>,
-        display_data: &DisplayData,
+        display_data: &Vec<LayoutJob>,
     ) {
         ui.separator();
 
@@ -168,11 +168,11 @@ impl TracingLogDisplay {
         changed
     }
 
-    fn render_logs(&mut self, ui: &mut Ui, display_data: &DisplayData) {
+    fn render_logs(&mut self, ui: &mut Ui, display_data: &Vec<LayoutJob>) {
         let text_style = egui::TextStyle::Monospace;
         let row_height = ui.text_style_height(&text_style);
 
-        let logs = &display_data.filtered_logs;
+        let logs = &display_data;
         ScrollArea::vertical()
             .auto_shrink([false; 2])
             .stick_to_bottom(self.settings.auto_scroll)
@@ -181,7 +181,7 @@ impl TracingLogDisplay {
                     // only compute the layout job for the visible rows
                     // TODO: cache the layout jobs - logs dont change unless settings do
                     if let Some(job) = logs.get(row) {
-                        ui.label(create_layout_job(job, self.settings));
+                        ui.add(egui::Label::new(job));
                     }
                 }
             });
@@ -252,23 +252,43 @@ fn format_fields(fields: &HashMap<String, String>) -> String {
 
 struct EguiApp {
     tokio_bridge: TokioEguiBridge,
-    display_data_rx: triple_buffer::Output<DisplayData>,
+    display_data_rx: Vec<LayoutJob>,
     log_display: TracingLogDisplay,
     metrics: triple_buffer::Output<PhantomData<()>>,
     internal_metrics: triple_buffer::Output<OculusInternalMetrics>,
     to_data: UnboundedSender<UiEvent>,
+
+    benchmark_total_fps: u64,
 }
 
 impl EguiApp {
     fn new(
         cc: &eframe::CreationContext<'_>,
         tokio_egui_bridge: TokioEguiBridge,
-        display_data_rx: triple_buffer::Output<DisplayData>,
         internal_metrics: triple_buffer::Output<OculusInternalMetrics>,
         metrics: triple_buffer::Output<PhantomData<()>>,
         initial_settings: LogDisplaySettings,
         to_data: UnboundedSender<UiEvent>,
     ) -> Self {
+        let mut display_data_rx = Vec::new();
+        for i in 0..100_000 {
+            let log = DashboardEvent {
+                timestamp: i as u64,
+                level: Level::INFO,
+                target: "test_target".to_string(),
+                message: format!("Test log message {}", i),
+                span_id: Some(i as u64),
+                parent_span_id: None,
+                file: Some("test_file.rs".to_string()),
+                line: Some(i as u32),
+                fields: HashMap::new(),
+                event_type: "log".to_string(),
+            };
+            let job = create_layout_job(&log, initial_settings);
+
+            display_data_rx.push(job);
+        }
+
         // register the egui context globally
         let ctx = cc.egui_ctx.clone();
         tokio_egui_bridge.register_egui_context(ctx);
@@ -279,12 +299,16 @@ impl EguiApp {
             to_data,
             metrics,
             internal_metrics,
+            benchmark_total_fps: 0,
         }
     }
 }
 
 impl eframe::App for EguiApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        info!("EguiApp::update called");
+        self.benchmark_total_fps += 1;
+
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.heading("Oculus");
 
@@ -312,11 +336,11 @@ impl eframe::App for EguiApp {
 
             ui.separator();
 
-            self.display_data_rx.update();
-            let display_data = self.display_data_rx.read();
+            //self.display_data_rx.update();
+            //let display_data = self.display_data_rx.read();
 
             // LOG COUNTS as colored buttons
-            let log_counts = &display_data.log_counts;
+            let log_counts = LogCounts::default();
             ui.horizontal(|ui| {
                 ui.label("Log Counts:");
 
@@ -429,7 +453,7 @@ impl eframe::App for EguiApp {
             ui.separator();
 
             // LOGS
-            self.log_display.render_logs(ui, display_data);
+            self.log_display.render_logs(ui, &self.display_data_rx);
         });
     }
 
@@ -454,7 +478,6 @@ pub fn run_egui(
             Ok(Box::new(EguiApp::new(
                 cc,
                 tokio_egui_bridge,
-                display_data_rx,
                 internal_metrics,
                 metrics,
                 initial_settings,
