@@ -1,7 +1,7 @@
 use crate::{FrontendSide, TokioEguiBridge, prelude::*};
 use argus::tracing::oculus::{DashboardEvent, Level};
 use eframe::egui;
-use egui::{Button, text::LayoutJob};
+use egui::{Button, Shadow, text::LayoutJob};
 use egui_extras::TableBuilder;
 
 // Add the tracing log display module
@@ -12,7 +12,10 @@ const COLOR_ERROR: Color32 = Color32::from_rgb(255, 85, 85); // soft red
 const COLOR_WARNING: Color32 = Color32::from_rgb(255, 204, 0); // amber
 const COLOR_INFO: Color32 = Color32::from_rgb(80, 250, 123); // neon green
 const COLOR_DEBUG: Color32 = Color32::from_rgb(139, 233, 253); // cyan
-const COLOR_TRACE: Color32 = Color32::from_rgb(128, 128, 128); // medium gray
+const COLOR_TRACE: Color32 = Color32::from_rgb(189, 147, 249); // light purple
+
+const COLOR_LIHT_PURPLE: Color32 = Color32::from_rgb(189, 147, 249); // light purple
+const COLOR_LIGHT_MAGENTA: Color32 = Color32::from_rgb(255, 121, 198); // light magenta
 
 const _COLOR_TEXT: Color32 = Color32::from_rgb(255, 255, 255); // white text on dark backgrounds
 const COLOR_TEXT_INV: Color32 = Color32::from_rgb(0, 0, 0); // black text on colored backgrounds
@@ -125,6 +128,8 @@ struct EguiApp {
     tokio_bridge: TokioEguiBridge,
     frontend_side: FrontendSide,
 
+    toasts: egui_notify::Toasts,
+
     // Hack to detect if the wrap setting has changed
     // and re-render the table - otherwise the layouting is wrong
     // bcause of the horizontal scroll area
@@ -180,7 +185,7 @@ impl EguiApp {
         changed
     }
 
-    fn render_logs_table(&mut self, ui: &mut Ui) {
+    fn render_logs_table(&mut self, ctx: &egui::Context, ui: &mut Ui) {
         let text_style = egui::TextStyle::Monospace;
         let row_height = ui.text_style_height(&text_style);
         let logs = &self
@@ -253,12 +258,14 @@ impl EguiApp {
                         ui.label("Message");
                     });
                 })
-                .body(|mut body| {
+                .body(|body| {
                     let num_rows = logs.len();
                     body.rows(row_height, num_rows, |mut row| {
                         let row_index = row.index();
                         if let Some(event) = logs.get(row_index) {
                             display_log_line_columns(
+                                ctx,
+                                &mut self.toasts,
                                 &mut row,
                                 event,
                                 self.frontend_side.settings,
@@ -305,6 +312,7 @@ impl EguiApp {
             tokio_bridge: tokio_egui_bridge,
             previous_wrap_setting: frontend.settings.wrap,
             frontend_side: frontend,
+            toasts: egui_notify::Toasts::default(),
         }
     }
 }
@@ -400,7 +408,9 @@ impl eframe::App for EguiApp {
             ui.separator();
 
             // LOGS
-            self.render_logs_table(ui);
+            self.render_logs_table(ctx, ui);
+
+            self.toasts.show(ctx);
         });
     }
 
@@ -416,6 +426,8 @@ pub enum UiEvent {
 }
 
 pub fn display_log_line_columns(
+    ctx: &egui::Context,
+    toasts: &mut egui_notify::Toasts,
     row: &mut egui_extras::TableRow,
     event: &DashboardEvent,
     settings: DisplaySettings,
@@ -476,9 +488,16 @@ pub fn display_log_line_columns(
     // File info column
     if settings.show_file_info {
         row.col(|ui| {
-            if let (Some(file_path), Some(line)) = (&event.file, event.line) {
-                let file_info = format!("{file_path}:{line}");
-                let line_num = line;
+            if let (Some(file_path), Some(line_num)) = (&event.file, event.line) {
+                let PathParts { project, file } = path_parts(file_path);
+                let file_info = format!("{}:{}", file, line_num);
+
+                ui.label(
+                    egui::RichText::new(project)
+                        .color(COLOR_LIGHT_MAGENTA)
+                        .font(egui::FontId::monospace(10.0)),
+                );
+
                 let hyperlink = egui::RichText::new(&file_info)
                     .color(Color32::LIGHT_BLUE)
                     .font(egui::FontId::monospace(10.0))
@@ -494,6 +513,8 @@ pub fn display_log_line_columns(
                             line: line_num,
                         })
                         .unwrap_or_else(|_| error!("Failed to send OpenInEditor event"));
+
+                    toasts.info(format!("Opening {file_path} in editor..."));
                 }
             }
         });
@@ -527,10 +548,38 @@ pub fn display_log_line_columns(
             );
         }
 
-        if settings.wrap {
-            ui.add(egui::Label::new(message_job).wrap());
+        let label_response = if settings.wrap {
+            ui.add(egui::Label::new(message_job).wrap())
         } else {
-            ui.add(egui::Label::new(message_job));
-        }
+            ui.add(egui::Label::new(message_job))
+        };
+
+        let _ctx_menu = label_response.context_menu(|ui| {
+            if ui.button("Copy to clipboard").clicked() {
+                ctx.copy_text(event.message.clone());
+                ui.close_menu();
+            }
+        });
     });
+}
+
+struct PathParts<'a> {
+    pub project: &'a str,
+    pub file: &'a str,
+}
+
+fn path_parts(path: &str) -> PathParts<'_> {
+    match path.rsplit_once("/src/") {
+        Some((before_src, after_src)) => {
+            let project = before_src.rsplit('/').next().unwrap_or("");
+            PathParts {
+                project,
+                file: after_src,
+            }
+        }
+        None => PathParts {
+            project: "",
+            file: path,
+        },
+    }
 }

@@ -43,6 +43,7 @@ serde_json = "1.0"
 eframe = { version = "0.31" }
 egui = { version = "0.31" }
 egui_extras = { version = "0.31" }
+egui-notify = { version = "0.19" }                 # egui 0.31
 chrono = { version = "0.4", features = ["serde"] }
 
 [features]
