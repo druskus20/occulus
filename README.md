@@ -8,7 +8,7 @@ tokio::tracing but wit a GUI
 > hardcoded local dependencies from my other repos. Once I reach a stable 
 > release of my libraries, I will publish them to crates.io and update this repo.
 
-<img width="1215" height="675" alt="image" src="https://github.com/user-attachments/assets/5157f70c-69b8-4b40-932d-c7b4b1744b22" />
+<img width="1385" height="843" alt="image" src="https://github.com/user-attachments/assets/0cbb88b2-0004-484f-9cef-cd52a9cc0128" />
 
 ## Nvim integration
 
