@@ -186,13 +186,12 @@ impl EguiApp {
                     // only compute the layout job for the visible rows
                     // TODO: cache the layout jobs - logs dont change unless settings do
                     if let Some(job) = logs.get(row) {
-                        let layout_job = create_layout_job(
+                        display_log_line(
                             ui,
                             job,
                             self.frontend_side.settings,
                             self.frontend_side.to_backend.clone(),
                         );
-                        ui.label(layout_job);
                     }
                 }
             });
@@ -341,14 +340,13 @@ pub enum UiEvent {
     OpenInEditor { path: String, line: u32 },
 }
 
-pub fn create_layout_job(
+pub fn display_log_line(
     ui: &mut Ui,
     event: &DashboardEvent,
     settings: DisplaySettings,
     to_backend: tokio::sync::mpsc::UnboundedSender<UiEvent>,
-) -> LayoutJob {
+) {
     let mut job = LayoutJob::default();
-
     // Timestamp
     if settings.show_timestamps {
         let timestamp = format_timestamp_utc(event.timestamp);
@@ -362,7 +360,6 @@ pub fn create_layout_job(
             },
         );
     }
-
     // Level with color
     let level_text = format!("{:>5} ", event.level.to_string().to_uppercase());
     job.append(
@@ -374,7 +371,6 @@ pub fn create_layout_job(
             ..Default::default()
         },
     );
-
     // Target
     if settings.show_targets {
         job.append(
@@ -387,7 +383,6 @@ pub fn create_layout_job(
             },
         );
     }
-
     // Span info
     if settings.show_span_info {
         if let Some(span_meta) = &event.span_meta {
@@ -408,76 +403,58 @@ pub fn create_layout_job(
             );
         }
     }
-
-    //use std::env;
-    //use std::process::Command;
-
-    //fn open_in_editor(file: &str, line: u32) {
-    //    let editor = env::var("EDITOR").unwrap_or_else(|_| "nano".to_string());
-
-    //    let status = Command::new(editor)
-    //        .arg(format!("+{}", line)) // many editors use +<line> to jump to line
-    //        .arg(file)
-    //        .status();
-
-    //    if let Err(e) = status {
-    //        eprintln!("Failed to open editor: {}", e);
-    //    }
-    //}
-
-    if settings.show_file_info {
-        if let (Some(file_path), Some(line)) = (&event.file, event.line) {
-            let file_info = format!("{file_path}:{line} ");
-            let line_num = line; // Copy value
-
-            job.append(
-                &file_info,
-                0.0,
-                EguiTextFormat {
-                    color: Color32::GRAY,
-                    font_id: egui::FontId::monospace(10.0),
-                    ..Default::default()
-                },
-            );
-
-            // Add interactivity
-            if ui
-                .add(egui::Label::new(file_info).sense(egui::Sense::click()))
-                .clicked()
-            {
-                to_backend
-                    .send(UiEvent::OpenInEditor {
-                        path: file_path.clone(),
-                        line: line_num,
-                    })
-                    .unwrap_or_else(|_| error!("Failed to send OpenInEditor event"));
+    // Use horizontal layout to display everything inline
+    ui.horizontal_top(|ui| {
+        // First part: everything up to the file info
+        ui.label(job);
+        // File info as clickable hyperlink
+        if settings.show_file_info {
+            if let (Some(file_path), Some(line)) = (&event.file, event.line) {
+                let file_info = format!("{file_path}:{line}");
+                let line_num = line;
+                let hyperlink = egui::RichText::new(&file_info)
+                    .color(Color32::LIGHT_BLUE)
+                    .font(egui::FontId::monospace(10.0))
+                    .underline();
+                if ui
+                    .link(hyperlink)
+                    .on_hover_text("Click to open in editor")
+                    .clicked()
+                {
+                    to_backend
+                        .send(UiEvent::OpenInEditor {
+                            path: file_path.clone(),
+                            line: line_num,
+                        })
+                        .unwrap_or_else(|_| error!("Failed to send OpenInEditor event"));
+                }
+                ui.label(" "); // Space after file info
             }
         }
-    }
-
-    // Main message
-    job.append(
-        &event.message,
-        0.0,
-        EguiTextFormat {
-            color: Color32::WHITE,
-            font_id: egui::FontId::monospace(12.0),
-            ..Default::default()
-        },
-    );
-
-    // Fields (if any)
-    if !event.fields.is_empty() {
-        job.append(
-            &format_fields(&event.fields),
+        // Create a new job for the message and fields
+        let mut message_job = LayoutJob::default();
+        // Main message
+        message_job.append(
+            &event.message,
             0.0,
             EguiTextFormat {
-                color: Color32::LIGHT_GRAY,
+                color: Color32::WHITE,
                 font_id: egui::FontId::monospace(12.0),
                 ..Default::default()
             },
         );
-    }
-
-    job
+        // Fields (if any)
+        if !event.fields.is_empty() {
+            message_job.append(
+                &format_fields(&event.fields),
+                0.0,
+                EguiTextFormat {
+                    color: Color32::LIGHT_GRAY,
+                    font_id: egui::FontId::monospace(12.0),
+                    ..Default::default()
+                },
+            );
+        }
+        ui.label(message_job);
+    });
 }
