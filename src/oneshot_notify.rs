@@ -7,28 +7,28 @@ use tokio::sync::Notify;
 #[derive(Debug)]
 pub struct OneshotNotify {
     flag: AtomicBool,
-    notify: Notify,
-    condvar: (Mutex<bool>, Condvar),
+    async_notify: Notify,
+    sync_notify: (Mutex<bool>, Condvar),
 }
 
 impl OneshotNotify {
     pub fn new() -> Self {
         Self {
             flag: AtomicBool::new(false),
-            notify: Notify::new(),
-            condvar: (Mutex::new(false), Condvar::new()),
+            async_notify: Notify::new(),
+            sync_notify: (Mutex::new(false), Condvar::new()),
         }
     }
 
     pub fn notify(&self) {
         if !self.flag.swap(true, std::sync::atomic::Ordering::AcqRel) {
-            let (lock, cvar) = &self.condvar;
+            let (lock, cvar) = &self.sync_notify;
             let mut notified = lock.lock().unwrap();
             *notified = true;
             // sync notify
             cvar.notify_all();
             // async notify
-            self.notify.notify_waiters();
+            self.async_notify.notify_waiters();
         }
     }
 
@@ -38,7 +38,7 @@ impl OneshotNotify {
         if self.flag.load(std::sync::atomic::Ordering::Acquire) {
             return;
         }
-        self.notify.notified().await;
+        self.async_notify.notified().await;
         info!("Egui ctx is available now");
     }
 
@@ -48,7 +48,7 @@ impl OneshotNotify {
             return;
         }
         // wait on the condition variable
-        let (lock, cvar) = &self.condvar;
+        let (lock, cvar) = &self.sync_notify;
         let mut notified = lock.lock().unwrap();
         while !*notified {
             notified = cvar.wait(notified).unwrap();

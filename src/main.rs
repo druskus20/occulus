@@ -9,7 +9,7 @@ pub(crate) mod prelude {
 use self::prelude::*;
 use async_rt::TokioEguiBridge;
 use backend::DataToDisplay;
-use frontend::{LogDisplaySettings, UiEvent};
+use frontend::{DisplaySettings, UiEvent};
 use tokio::sync::mpsc::unbounded_channel;
 use triple_buffer::triple_buffer;
 
@@ -45,7 +45,10 @@ fn main() -> Result<()> {
     // TOKIO - Background threads
     let tokio_thread_handle = {
         let tokio_egui_bridge = tokio_egui_bridge.clone(); // take ownership 
-        async_rt::start(async move { backend::run_backend(backend, tokio_egui_bridge).await })
+        async_rt::start(tokio_egui_bridge.clone(), async move {
+            // Register the Egui context with the bridge
+            backend::run_backend(backend, tokio_egui_bridge).await
+        })
     };
 
     // EGUI - Main thread
@@ -73,7 +76,7 @@ impl FrontendBackendComm {
         let (data_buffer_tx, data_buffer_rx) = triple_buffer(&DataToDisplay::default());
         let (to_backend, from_frontend) = unbounded_channel::<UiEvent>();
         let (from_backend, to_frontend) = unbounded_channel::<DataToDisplay>();
-        let settings = LogDisplaySettings::default();
+        let settings = DisplaySettings::default();
 
         (
             FrontendSide {
@@ -97,7 +100,7 @@ pub struct FrontendSide {
     pub data_buffer_rx: triple_buffer::Output<DataToDisplay>,
     pub to_backend: tokio::sync::mpsc::UnboundedSender<UiEvent>,
     pub from_backend: tokio::sync::mpsc::UnboundedSender<DataToDisplay>,
-    pub settings: LogDisplaySettings,
+    pub settings: DisplaySettings,
 }
 
 #[derive(Debug)]
@@ -105,5 +108,5 @@ pub struct BackendSide {
     pub data_buffer_tx: triple_buffer::Input<DataToDisplay>,
     pub from_frontend: tokio::sync::mpsc::UnboundedReceiver<UiEvent>,
     pub to_frontend: tokio::sync::mpsc::UnboundedReceiver<DataToDisplay>,
-    pub settings: LogDisplaySettings,
+    pub settings: DisplaySettings,
 }

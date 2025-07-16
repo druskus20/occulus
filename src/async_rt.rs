@@ -5,10 +5,13 @@ use std::{
 };
 
 use crate::{oneshot_notify::OneshotNotify, prelude::*};
-use tokio::runtime::Builder;
+use tokio::runtime::{Builder, Handle, Runtime};
 use tokio_util::sync::CancellationToken;
 
-pub fn start(fut: impl futures::Future<Output = ()> + Send + 'static) -> JoinHandle<()> {
+pub fn start(
+    tokio_egui_bridge: TokioEguiBridge,
+    fut: impl futures::Future<Output = ()> + Send + 'static,
+) -> JoinHandle<()> {
     std::thread::spawn(move || {
         let num_cpus = std::thread::available_parallelism().map_or(1, NonZeroUsize::get);
         info!(
@@ -23,14 +26,26 @@ pub fn start(fut: impl futures::Future<Output = ()> + Send + 'static) -> JoinHan
             .build()
             .expect("Failed to create tokio runtime");
 
+        // Pass the runtime to the bridge so that it can be used later
+        // to spawn tasks on the runtime from the GUI thread.
+        tokio_egui_bridge.register_tokio_runtime(rt.handle().clone());
+
         rt.block_on(fut);
     })
 }
 
 #[derive(Debug, Clone)]
 pub struct TokioEguiBridge {
+    /// This field starts as `None` and is set when the Egui context is registered.
+    /// A notification is sent when the context is available.
     egui_ctx: Arc<std::sync::OnceLock<egui::Context>>,
     egui_ctx_available: Arc<OneshotNotify>,
+
+    /// This field starts as `None` and is set when the Tokio runtime is initialized.
+    /// A notification is sent when the runtime is available.
+    tokio_rt: Arc<std::sync::OnceLock<tokio::runtime::Handle>>,
+    tokio_rt_available: Arc<OneshotNotify>,
+
     cancel: CancellationToken,
 }
 
@@ -45,6 +60,8 @@ impl TokioEguiBridge {
         Self {
             egui_ctx: Arc::new(OnceLock::new()),
             egui_ctx_available: Arc::new(OneshotNotify::new()),
+            tokio_rt: Arc::new(OnceLock::new()),
+            tokio_rt_available: Arc::new(OneshotNotify::new()),
             cancel: CancellationToken::new(),
         }
     }
@@ -64,6 +81,22 @@ impl TokioEguiBridge {
     pub fn wait_egui_ctx_blocking(&self) -> egui::Context {
         self.egui_ctx_available.wait_blocking();
         self.egui_ctx.get().expect("Egui context not set").clone()
+    }
+
+    pub fn register_tokio_runtime(&self, rt: Handle) {
+        info!("Registering Tokio runtime");
+        self.tokio_rt.set(rt).expect("Tokio runtime already set");
+        self.tokio_rt_available.notify();
+    }
+
+    pub async fn wait_tokio_rt(&self) -> Handle {
+        self.tokio_rt_available.wait().await;
+        self.tokio_rt.get().expect("Tokio runtime not set").clone()
+    }
+
+    pub fn wait_tokio_rt_blocking(&self) -> Handle {
+        self.tokio_rt_available.wait_blocking();
+        self.tokio_rt.get().expect("Tokio runtime not set").clone()
     }
 
     // resturns a future that resolves when the tokio task is cancelled

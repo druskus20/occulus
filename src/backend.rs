@@ -116,7 +116,7 @@ pub struct DataPrecomputeTask {
 
     ctrl_rx: UnboundedReceiver<DataTaskCtrl>,
 
-    backend: BackendSide,
+    backend_side: BackendSide,
     egui_ctx: egui::Context,
     #[allow(unused)]
     cancel: CancellationToken,
@@ -201,7 +201,7 @@ impl DataPrecomputeTask {
             incoming_logs_buffer,
             ctrl_rx: data_task_ctrl,
             egui_ctx,
-            backend,
+            backend_side: backend,
             cancel,
         }
     }
@@ -231,11 +231,11 @@ impl DataPrecomputeTask {
                             }
                             None => {
                                 info!("DataTaskCtrl channel closed, exiting loop");
-                                return Ok(self.backend);
+                                return Ok(self.backend_side);
                             }
                         }
                     },
-                    r = self.backend.from_frontend.recv() => {
+                    r = self.backend_side.from_frontend.recv() => {
                         match r {
                             Some(event) => {
                                 trace!("Received UI event: {:?}", event);
@@ -243,7 +243,7 @@ impl DataPrecomputeTask {
                             }
                             None => {
                                 info!("UI event channel closed, exiting loop");
-                                return Ok(self.backend);
+                                return Ok(self.backend_side);
                             }
                         }
                     },
@@ -254,7 +254,7 @@ impl DataPrecomputeTask {
                                 error!("Failed to publish new logs: {:?}", e);
                                 return Err(DataTaskError {
                                     msg: format!("Failed to publish new logs: {e:?}"),
-                                    backend: self.backend,
+                                    backend: self.backend_side,
                                 });
                             }
                         }
@@ -268,7 +268,7 @@ impl DataPrecomputeTask {
     #[tracing::instrument(skip_all)]
     pub async fn publish_new_logs(&mut self) -> Result<()> {
         trace!("Publishing new logs to EGUI context");
-        let log_display_settings = self.backend.settings;
+        let log_display_settings = self.backend_side.settings;
 
         // Process new logs from the tcp task
         // order here avoids unnecessary clone
@@ -301,11 +301,11 @@ impl DataPrecomputeTask {
         self.filtered_logs.extend(filtered_new_logs);
 
         // All the logs - we cannot extend, becasue how triple_buffer is implemented
-        *self.backend.data_buffer_tx.input_buffer_mut() = DataToDisplay {
+        *self.backend_side.data_buffer_tx.input_buffer_mut() = DataToDisplay {
             filtered_logs: self.filtered_logs.clone(),
             log_counts: LogCounts::from_logs(&self.all_logs),
         };
-        self.backend.data_buffer_tx.publish();
+        self.backend_side.data_buffer_tx.publish();
         self.egui_ctx.request_repaint();
 
         Ok(())
@@ -314,7 +314,7 @@ impl DataPrecomputeTask {
     async fn handle_ui_event(&mut self, event: UiEvent) {
         match event {
             UiEvent::LogDisplaySettingsChanged(new_settings) => {
-                self.backend.settings = new_settings;
+                self.backend_side.settings = new_settings;
                 self.filter_and_refresh_egui_buf().await;
             }
         }
@@ -327,16 +327,16 @@ impl DataPrecomputeTask {
         let log_count = LogCounts::from_logs(all_logs);
         let filtered_logs = all_logs
             .iter()
-            .filter(|&event| event.level >= self.backend.settings.level_filter.into())
+            .filter(|&event| event.level >= self.backend_side.settings.level_filter.into())
             .cloned()
             .collect::<VecDeque<_>>();
 
-        *self.backend.data_buffer_tx.input_buffer_mut() = DataToDisplay {
+        *self.backend_side.data_buffer_tx.input_buffer_mut() = DataToDisplay {
             filtered_logs,
             log_counts: log_count,
         };
         // Refresh the triple buffer to reflect the new settings
-        self.backend.data_buffer_tx.publish();
+        self.backend_side.data_buffer_tx.publish();
         self.egui_ctx.request_repaint();
     }
 }
