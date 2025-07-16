@@ -4,13 +4,13 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-glados = { path = "/home/drusk/code/arcana/glados" }
+#glados = { path = "/home/drusk/code/arcana/glados" }
 hermes = { path = "/home/drusk/code/arcana/hermes" }
 spells = { path = "/home/drusk/code/arcana/spells", features = ["ctrl_c"] }
 quill = { path = "/home/drusk/code/arcana/quill" }
 argus = { path = "/home/drusk/code/arcana/argus", features = ["oculus"] }
-shard-protocol = { path = "/home/drusk/thesis/repos/three/libs/shard-protocol" }
-three-utils = { path = "/home/drusk/thesis/repos/three/libs/three-utils" }
+#shard-protocol = { path = "/home/drusk/thesis/repos/three/libs/shard-protocol" }
+#three-utils = { path = "/home/drusk/thesis/repos/three/libs/three-utils" }
 
 # Errors
 color-eyre = "0.6"
@@ -42,6 +42,7 @@ serde_json = "1.0"
 
 eframe = { version = "0.31" }
 egui = { version = "0.31" }
+egui_extras = { version = "0.31" }
 chrono = { version = "0.4", features = ["serde"] }
 
 [features]

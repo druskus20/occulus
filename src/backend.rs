@@ -314,6 +314,7 @@ impl DataPrecomputeTask {
 
     async fn handle_ui_event(&mut self, event: UiEvent) {
         fn open_in_nvim(file_path: &str, line: u32) {
+            info!("Opening file {} at line {}", file_path, line);
             // Check that $EDITOR is set to nvim
             let editor = env::var("EDITOR").unwrap_or_else(|_| "nvim".to_string());
             if !editor.ends_with("nvim") {
@@ -322,7 +323,7 @@ impl DataPrecomputeTask {
             }
             if !std::path::Path::new("/tmp/nvim.sock").exists() {
                 error!(
-                    "Neovim is not running, cannot open file in Neovim.\
+                    "/tmp/nvim.sock does not exists, cannot open file in Neovim.\n
                     Try opening Neovim or running: :call serverstart('/tmp/nvim.sock')"
                 );
                 return;
@@ -346,7 +347,7 @@ impl DataPrecomputeTask {
                 .status();
 
             if let Err(e) = status {
-                eprintln!("Failed to open file {file_path}:{line} in Neovim: {e}");
+                error!("Failed to open file {file_path}:{line} in Neovim: {e}");
             }
         }
 

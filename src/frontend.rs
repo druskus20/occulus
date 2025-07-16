@@ -2,6 +2,7 @@ use crate::{FrontendSide, TokioEguiBridge, prelude::*};
 use argus::tracing::oculus::{DashboardEvent, Level};
 use eframe::egui;
 use egui::{Button, text::LayoutJob};
+use egui_extras::TableBuilder;
 
 // Add the tracing log display module
 use egui::{Color32, RichText, ScrollArea, TextFormat as EguiTextFormat, Ui};
@@ -169,31 +170,80 @@ impl EguiApp {
         changed
     }
 
-    fn render_logs(&mut self, ui: &mut Ui) {
+    fn render_logs_table(&mut self, ui: &mut Ui) {
         let text_style = egui::TextStyle::Monospace;
         let row_height = ui.text_style_height(&text_style);
-
         let logs = &self
             .frontend_side
             .data_buffer_rx
             .output_buffer_mut()
             .filtered_logs;
-        ScrollArea::vertical()
+
+        use egui_extras::{Column, TableBuilder};
+
+        let mut table_builder = TableBuilder::new(ui);
+
+        // Add columns based on settings
+        if self.frontend_side.settings.show_timestamps {
+            table_builder = table_builder.column(Column::auto().at_least(100.0).resizable(true)); // Timestamp
+        }
+        table_builder = table_builder.column(Column::auto().at_least(40.0).resizable(true)); // Level
+        if self.frontend_side.settings.show_targets {
+            table_builder = table_builder.column(Column::auto().resizable(true)); // Target
+        }
+        if self.frontend_side.settings.show_span_info {
+            table_builder = table_builder.column(Column::auto().at_least(60.0).resizable(true)); // Span
+        }
+        if self.frontend_side.settings.show_file_info {
+            table_builder = table_builder.column(Column::auto().resizable(true)); // File info
+        }
+        table_builder = table_builder.column(Column::remainder().at_least(200.0).resizable(true)); // Message + fields
+
+        table_builder
             .auto_shrink([false; 2])
+            .cell_layout(egui::Layout::left_to_right(egui::Align::LEFT))
             .stick_to_bottom(self.frontend_side.settings.auto_scroll)
-            .show_rows(ui, row_height, logs.len(), |ui, row_range| {
-                for row in row_range {
-                    // only compute the layout job for the visible rows
-                    // TODO: cache the layout jobs - logs dont change unless settings do
-                    if let Some(job) = logs.get(row) {
-                        display_log_line(
-                            ui,
-                            job,
+            .header(20.0, |mut header| {
+                if self.frontend_side.settings.show_timestamps {
+                    header.col(|ui| {
+                        ui.label("Timestamp");
+                    });
+                }
+                header.col(|ui| {
+                    ui.label("Level");
+                });
+                if self.frontend_side.settings.show_targets {
+                    header.col(|ui| {
+                        ui.label("Target");
+                    });
+                }
+                if self.frontend_side.settings.show_span_info {
+                    header.col(|ui| {
+                        ui.label("Span Info");
+                    });
+                }
+                if self.frontend_side.settings.show_file_info {
+                    header.col(|ui| {
+                        ui.label("File Info");
+                    });
+                }
+                header.col(|ui| {
+                    ui.label("Message");
+                });
+            })
+            .body(|mut body| {
+                let num_rows = logs.len();
+                body.rows(row_height, num_rows, |mut row| {
+                    let row_index = row.index();
+                    if let Some(event) = logs.get(row_index) {
+                        display_log_line_columns(
+                            &mut row,
+                            event,
                             self.frontend_side.settings,
                             self.frontend_side.to_backend.clone(),
                         );
                     }
-                }
+                });
             });
     }
 }
@@ -325,7 +375,7 @@ impl eframe::App for EguiApp {
             ui.separator();
 
             // LOGS
-            self.render_logs(ui);
+            self.render_logs_table(ui);
         });
     }
 
@@ -340,75 +390,67 @@ pub enum UiEvent {
     OpenInEditor { path: String, line: u32 },
 }
 
-pub fn display_log_line(
-    ui: &mut Ui,
+pub fn display_log_line_columns(
+    row: &mut egui_extras::TableRow,
     event: &DashboardEvent,
     settings: DisplaySettings,
     to_backend: tokio::sync::mpsc::UnboundedSender<UiEvent>,
 ) {
-    let mut job = LayoutJob::default();
-    // Timestamp
+    // Timestamp column
     if settings.show_timestamps {
-        let timestamp = format_timestamp_utc(event.timestamp);
-        job.append(
-            &format!("{timestamp} "),
-            0.0,
-            EguiTextFormat {
-                color: Color32::GRAY,
-                font_id: egui::FontId::monospace(12.0),
-                ..Default::default()
-            },
-        );
-    }
-    // Level with color
-    let level_text = format!("{:>5} ", event.level.to_string().to_uppercase());
-    job.append(
-        &level_text,
-        0.0,
-        EguiTextFormat {
-            color: color_for_log_level(&event.level),
-            font_id: egui::FontId::monospace(12.0),
-            ..Default::default()
-        },
-    );
-    // Target
-    if settings.show_targets {
-        job.append(
-            &format!("{} ", event.target),
-            0.0,
-            EguiTextFormat {
-                color: Color32::LIGHT_BLUE,
-                font_id: egui::FontId::monospace(12.0),
-                ..Default::default()
-            },
-        );
-    }
-    // Span info
-    if settings.show_span_info {
-        if let Some(span_meta) = &event.span_meta {
-            let span_name = &span_meta.name;
-            let span_text = if let Some(parent_id) = event.parent_span_id {
-                format!("[{parent_id}→{span_name}] ")
-            } else {
-                format!("[{span_name}] ")
-            };
-            job.append(
-                &span_text,
-                0.0,
-                EguiTextFormat {
-                    color: Color32::YELLOW,
-                    font_id: egui::FontId::monospace(12.0),
-                    ..Default::default()
-                },
+        row.col(|ui| {
+            let timestamp = format_timestamp_utc(event.timestamp);
+            ui.label(
+                egui::RichText::new(timestamp)
+                    .color(Color32::GRAY)
+                    .font(egui::FontId::monospace(12.0)),
             );
-        }
+        });
     }
-    // Use horizontal layout to display everything inline
-    ui.horizontal_top(|ui| {
-        // First part: everything up to the file info
-        ui.label(job);
-        // File info as clickable hyperlink
-        if settings.show_file_info {
+
+    // Level column
+    row.col(|ui| {
+        let level_text = event.level.to_string().to_uppercase();
+        ui.label(
+            egui::RichText::new(level_text)
+                .color(color_for_log_level(&event.level))
+                .font(egui::FontId::monospace(12.0)),
+        );
+    });
+
+    // Target column
+    if settings.show_targets {
+        row.col(|ui| {
+            ui.label(
+                egui::RichText::new(&event.target)
+                    .color(Color32::LIGHT_BLUE)
+                    .font(egui::FontId::monospace(12.0)),
+            );
+        });
+    }
+
+    // Span info column
+    if settings.show_span_info {
+        row.col(|ui| {
+            if let Some(span_meta) = &event.span_meta {
+                let span_name = &span_meta.name;
+                let span_text = if let Some(parent_id) = event.parent_span_id {
+                    format!("{parent_id}→{span_name}")
+                } else {
+                    span_name.clone()
+                };
+                ui.label(
+                    egui::RichText::new(span_text)
+                        .color(Color32::YELLOW)
+                        .font(egui::FontId::monospace(12.0)),
+                );
+            }
+        });
+    }
+
+    // File info column
+    if settings.show_file_info {
+        row.col(|ui| {
             if let (Some(file_path), Some(line)) = (&event.file, event.line) {
                 let file_info = format!("{file_path}:{line}");
                 let line_num = line;
@@ -428,11 +470,14 @@ pub fn display_log_line(
                         })
                         .unwrap_or_else(|_| error!("Failed to send OpenInEditor event"));
                 }
-                ui.label(" "); // Space after file info
             }
-        }
-        // Create a new job for the message and fields
+        });
+    }
+
+    // Message + fields column
+    row.col(|ui| {
         let mut message_job = LayoutJob::default();
+
         // Main message
         message_job.append(
             &event.message,
@@ -443,6 +488,7 @@ pub fn display_log_line(
                 ..Default::default()
             },
         );
+
         // Fields (if any)
         if !event.fields.is_empty() {
             message_job.append(
@@ -455,6 +501,7 @@ pub fn display_log_line(
                 },
             );
         }
+
         ui.label(message_job);
     });
 }
