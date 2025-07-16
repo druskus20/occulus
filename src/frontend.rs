@@ -186,7 +186,13 @@ impl EguiApp {
                     // only compute the layout job for the visible rows
                     // TODO: cache the layout jobs - logs dont change unless settings do
                     if let Some(job) = logs.get(row) {
-                        ui.label(create_layout_job(job, self.frontend_side.settings));
+                        let layout_job = create_layout_job(
+                            ui,
+                            job,
+                            self.frontend_side.settings,
+                            self.frontend_side.to_backend.clone(),
+                        );
+                        ui.label(layout_job);
                     }
                 }
             });
@@ -332,9 +338,15 @@ impl eframe::App for EguiApp {
 #[derive(Debug, Clone)]
 pub enum UiEvent {
     LogDisplaySettingsChanged(DisplaySettings),
+    OpenInEditor { path: String, line: u32 },
 }
 
-pub fn create_layout_job(event: &DashboardEvent, settings: DisplaySettings) -> LayoutJob {
+pub fn create_layout_job(
+    ui: &mut Ui,
+    event: &DashboardEvent,
+    settings: DisplaySettings,
+    to_backend: tokio::sync::mpsc::UnboundedSender<UiEvent>,
+) -> LayoutJob {
     let mut job = LayoutJob::default();
 
     // Timestamp
@@ -378,11 +390,12 @@ pub fn create_layout_job(event: &DashboardEvent, settings: DisplaySettings) -> L
 
     // Span info
     if settings.show_span_info {
-        if let Some(span_id) = event.span_id {
+        if let Some(span_meta) = &event.span_meta {
+            let span_name = &span_meta.name;
             let span_text = if let Some(parent_id) = event.parent_span_id {
-                format!("[{parent_id}→{span_id}] ")
+                format!("[{parent_id}→{span_name}] ")
             } else {
-                format!("[{span_id}] ")
+                format!("[{span_name}] ")
             };
             job.append(
                 &span_text,
@@ -396,10 +409,27 @@ pub fn create_layout_job(event: &DashboardEvent, settings: DisplaySettings) -> L
         }
     }
 
-    // File info
+    //use std::env;
+    //use std::process::Command;
+
+    //fn open_in_editor(file: &str, line: u32) {
+    //    let editor = env::var("EDITOR").unwrap_or_else(|_| "nano".to_string());
+
+    //    let status = Command::new(editor)
+    //        .arg(format!("+{}", line)) // many editors use +<line> to jump to line
+    //        .arg(file)
+    //        .status();
+
+    //    if let Err(e) = status {
+    //        eprintln!("Failed to open editor: {}", e);
+    //    }
+    //}
+
     if settings.show_file_info {
-        if let (Some(file), Some(line)) = (&event.file, event.line) {
-            let file_info = format!("{file}:{line} ");
+        if let (Some(file_path), Some(line)) = (&event.file, event.line) {
+            let file_info = format!("{file_path}:{line} ");
+            let line_num = line; // Copy value
+
             job.append(
                 &file_info,
                 0.0,
@@ -409,6 +439,19 @@ pub fn create_layout_job(event: &DashboardEvent, settings: DisplaySettings) -> L
                     ..Default::default()
                 },
             );
+
+            // Add interactivity
+            if ui
+                .add(egui::Label::new(file_info).sense(egui::Sense::click()))
+                .clicked()
+            {
+                to_backend
+                    .send(UiEvent::OpenInEditor {
+                        path: file_path.clone(),
+                        line: line_num,
+                    })
+                    .unwrap_or_else(|_| error!("Failed to send OpenInEditor event"));
+            }
         }
     }
 

@@ -5,9 +5,10 @@ use argus::tracing::oculus::DashboardEvent;
 use egui::mutex::Mutex;
 use std::collections::VecDeque;
 use std::error::Error;
-use std::mem;
+use std::process::Command;
 use std::sync::Arc;
 use std::time::Duration;
+use std::{env, mem};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::net::TcpListener;
 use tokio::net::TcpStream;
@@ -312,16 +313,62 @@ impl DataPrecomputeTask {
     }
 
     async fn handle_ui_event(&mut self, event: UiEvent) {
+        fn open_in_nvim(file_path: &str, line: u32) {
+            // Check that $EDITOR is set to nvim
+            let editor = env::var("EDITOR").unwrap_or_else(|_| "nvim".to_string());
+            if !editor.ends_with("nvim") {
+                error!("$EDITOR is not set to nvim, cannot open file in Neovim");
+                return;
+            }
+            if !std::path::Path::new("/tmp/nvim.sock").exists() {
+                error!(
+                    "Neovim is not running, cannot open file in Neovim.\
+                    Try opening Neovim or running: :call serverstart('/tmp/nvim.sock')"
+                );
+                return;
+            }
+            // Check that nvim is already running and listening
+            if Command::new("nvim")
+                .arg("--server")
+                .arg("/tmp/nvim.sock")
+                .arg("--remote-expr")
+                .arg("v:servername")
+                .status()
+                .is_err()
+            {
+                error!("Neovim is not running, cannot open file in Neovim");
+                return;
+            }
+
+            let cmd = format!("<Cmd>edit {file_path}<CR>{line}G");
+            let status = Command::new("nvim")
+                .args(["--server", "/tmp/nvim.sock", "--remote-send", &cmd])
+                .status();
+
+            if let Err(e) = status {
+                eprintln!("Failed to open file {file_path}:{line} in Neovim: {e}");
+            }
+        }
+
         match event {
             UiEvent::LogDisplaySettingsChanged(new_settings) => {
                 self.backend_side.settings = new_settings;
                 self.filter_and_refresh_egui_buf().await;
             }
+            UiEvent::OpenInEditor { path, line } => {
+                // verify that the file exists
+                let path = std::path::PathBuf::from(path);
+                if !path.exists() {
+                    error!("File does not exist: {}", path.display());
+                    return;
+                }
+                open_in_nvim(&path.to_string_lossy(), line);
+            }
         }
     }
 
     async fn filter_and_refresh_egui_buf(&mut self) {
-        info!("Refreshing EGUI buffer");
+        trace!("Refreshing EGUI buffer");
         let all_logs = &self.all_logs;
 
         let log_count = LogCounts::from_logs(all_logs);
