@@ -5,6 +5,7 @@ use argus::tracing::oculus::DashboardEvent;
 use egui::mutex::Mutex;
 use std::collections::VecDeque;
 use std::error::Error;
+use std::mem;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, BufReader};
@@ -14,8 +15,6 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info};
-
-use std::mem;
 
 /// Runs the backend-side tasks for handling TCP connections and data processing
 pub async fn run_backend(backend: BackendSide, tokio_egui_bridge: TokioEguiBridge) {
@@ -188,31 +187,6 @@ impl TcpTask {
     }
 }
 
-//#[derive(Debug)]
-//pub struct DataUiBridge {
-//    /// Shared buffer to publish logs to the EGUI context
-//    //display_data_tx: triple_buffer::Input<DisplayData>,
-//    /// Initial log display settings (controlled by the UI)
-//    //log_display_settings: LogDisplaySettings,
-//    /// Receiver for events from the UI
-//    //from_ui: UnboundedReceiver<egui_app::UiEvent>,
-//    backend: BackendSide,
-//    /// Tokio <-> EGUI bridge to handle EGUI context initialization and cancellation
-//    egui_ctx: egui::Context,
-//    /// Cancellation token to signal task cancellation
-//    cancel: CancellationToken,
-//}
-//
-//impl DataUiBridge {
-//    pub fn new(egui_ctx: egui::Context, backend: BackendSide) -> Self {
-//        Self {
-//            egui_ctx,
-//            backend,
-//            cancel: CancellationToken::new(),
-//        }
-//    }
-//}
-
 impl DataPrecomputeTask {
     pub fn new(
         backend: BackendSide,
@@ -327,7 +301,7 @@ impl DataPrecomputeTask {
         self.filtered_logs.extend(filtered_new_logs);
 
         // All the logs - we cannot extend, becasue how triple_buffer is implemented
-        *self.backend.data_buffer_tx.input_buffer_mut() = DisplayData {
+        *self.backend.data_buffer_tx.input_buffer_mut() = DataToDisplay {
             filtered_logs: self.filtered_logs.clone(),
             log_counts: LogCounts::from_logs(&self.all_logs),
         };
@@ -357,7 +331,7 @@ impl DataPrecomputeTask {
             .cloned()
             .collect::<VecDeque<_>>();
 
-        *self.backend.data_buffer_tx.input_buffer_mut() = DisplayData {
+        *self.backend.data_buffer_tx.input_buffer_mut() = DataToDisplay {
             filtered_logs,
             log_counts: log_count,
         };
@@ -386,11 +360,21 @@ impl std::fmt::Display for DataTaskError {
 type LogCollection = VecDeque<Arc<DashboardEvent>>;
 
 #[derive(Debug, Clone, Default)]
-pub struct DisplayData {
+pub struct DataToDisplay {
     // Vector of references to the logs that match the current filter
     // The logs are not actually stored here, so clone is cheap
     pub filtered_logs: LogCollection,
     pub log_counts: LogCounts,
+}
+
+#[derive(Debug, Clone, Default, Copy)]
+pub struct LogCounts {
+    pub total: usize,
+    pub trace: usize,
+    pub debug: usize,
+    pub info: usize,
+    pub warn: usize,
+    pub error: usize,
 }
 
 impl LogCounts {
@@ -408,14 +392,4 @@ impl LogCounts {
         }
         counts
     }
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct LogCounts {
-    pub total: usize,
-    pub trace: usize,
-    pub debug: usize,
-    pub info: usize,
-    pub warn: usize,
-    pub error: usize,
 }

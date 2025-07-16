@@ -116,6 +116,20 @@ struct EguiApp {
 }
 
 impl EguiApp {
+    fn apply_filter(&mut self, new_filter: LogLevelFilter) -> bool {
+        if self.frontend.settings.level_filter != new_filter {
+            self.frontend.settings.level_filter = new_filter;
+            self.frontend
+                .to_backend
+                .send(UiEvent::LogDisplaySettingsChanged(self.frontend.settings))
+                .unwrap_or_else(|err| {
+                    error!("Failed to send log display settings change: {err}");
+                });
+            return true;
+        }
+        false
+    }
+
     fn show_controls(&mut self, ui: &mut Ui) -> bool {
         let mut changed = false;
 
@@ -166,6 +180,27 @@ impl EguiApp {
     }
 }
 
+fn add_colored_button(
+    name: &str,
+    color: Color32,
+    count: usize,
+    active: bool,
+    mut clicked_f: impl FnMut() -> bool,
+    ui: &mut Ui,
+) {
+    // Error button
+    let mut button =
+        Button::new(RichText::new(format!("{name}: {count}")).color(COLOR_TEXT_INV)).fill(color);
+
+    if active {
+        button = button.stroke(egui::Stroke::new(1.0, Color32::WHITE));
+    }
+
+    let button = ui.add(button);
+    if button.clicked() {
+        clicked_f();
+    }
+}
 impl EguiApp {
     fn new(
         cc: &eframe::CreationContext<'_>,
@@ -214,112 +249,55 @@ impl eframe::App for EguiApp {
 
             ui.separator();
 
-            let display_data = self.frontend.data_buffer_rx.output_buffer_mut();
-
-            // LOG COUNTS as colored buttons
-            let log_counts = &display_data.log_counts;
             ui.horizontal(|ui| {
+                // LOG COUNTS as colored buttons
+                let log_counts = self.frontend.data_buffer_rx.output_buffer_mut().log_counts;
+
                 ui.label("Log Counts:");
 
                 // Total count (non-clickable)
                 ui.label(format!("Total: {}", log_counts.total));
 
-                // Error button
-                let mut error_button = Button::new(
-                    RichText::new(format!("Error: {}", log_counts.error)).color(COLOR_TEXT_INV),
-                )
-                .fill(COLOR_ERROR);
-
-                if self.frontend.settings.level_filter == LogLevelFilter::Error {
-                    error_button = error_button.stroke(egui::Stroke::new(1.0, Color32::WHITE));
-                }
-
-                let error_button = ui.add(error_button);
-                if error_button.clicked() {
-                    self.frontend.settings.level_filter = LogLevelFilter::Error;
-                    self.frontend
-                        .to_backend
-                        .send(UiEvent::LogDisplaySettingsChanged(self.frontend.settings))
-                        .unwrap_or_else(|err| {
-                            error!("Failed to send log display settings change: {err}");
-                        });
-                }
-
-                // Warn button
-                let mut warn_button = Button::new(
-                    RichText::new(format!("Warn: {}", log_counts.warn)).color(COLOR_TEXT_INV),
-                )
-                .fill(COLOR_WARNING);
-                if self.frontend.settings.level_filter == LogLevelFilter::Warn {
-                    warn_button = warn_button.stroke(egui::Stroke::new(1.0, Color32::WHITE));
-                }
-                let warn_button = ui.add(warn_button);
-                if warn_button.clicked() {
-                    self.frontend.settings.level_filter = LogLevelFilter::Warn;
-                    self.frontend
-                        .to_backend
-                        .send(UiEvent::LogDisplaySettingsChanged(self.frontend.settings))
-                        .unwrap_or_else(|err| {
-                            error!("Failed to send log display settings change: {err}");
-                        });
-                }
-
-                // Info button
-                let mut info_button = Button::new(
-                    RichText::new(format!("Info: {}", log_counts.info)).color(COLOR_TEXT_INV),
-                )
-                .fill(COLOR_INFO);
-                if self.frontend.settings.level_filter == LogLevelFilter::Info {
-                    info_button = info_button.stroke(egui::Stroke::new(1.0, Color32::WHITE));
-                }
-                let info_button = ui.add(info_button);
-                if info_button.clicked() {
-                    self.frontend.settings.level_filter = LogLevelFilter::Info;
-                    self.frontend
-                        .to_backend
-                        .send(UiEvent::LogDisplaySettingsChanged(self.frontend.settings))
-                        .unwrap_or_else(|err| {
-                            error!("Failed to send log display settings change: {err}");
-                        });
-                }
-
-                // Debug button
-                let mut debug_button = Button::new(
-                    RichText::new(format!("Debug: {}", log_counts.debug)).color(COLOR_TEXT_INV),
-                )
-                .fill(COLOR_DEBUG);
-                if self.frontend.settings.level_filter == LogLevelFilter::Debug {
-                    debug_button = debug_button.stroke(egui::Stroke::new(1.0, Color32::WHITE));
-                }
-                let debug_button = ui.add(debug_button);
-                if debug_button.clicked() {
-                    self.frontend.settings.level_filter = LogLevelFilter::Debug;
-                    self.frontend
-                        .to_backend
-                        .send(UiEvent::LogDisplaySettingsChanged(self.frontend.settings))
-                        .unwrap_or_else(|err| {
-                            error!("Failed to send log display settings change: {err}");
-                        });
-                }
-
-                // Trace button
-                let mut trace_button = Button::new(
-                    RichText::new(format!("Trace: {}", log_counts.trace)).color(COLOR_TEXT_INV),
-                )
-                .fill(COLOR_TRACE);
-                if self.frontend.settings.level_filter == LogLevelFilter::Trace {
-                    trace_button = trace_button.stroke(egui::Stroke::new(1.0, Color32::WHITE));
-                }
-                let trace_button = ui.add(trace_button);
-                if trace_button.clicked() {
-                    self.frontend.settings.level_filter = LogLevelFilter::Trace;
-                    self.frontend
-                        .to_backend
-                        .send(UiEvent::LogDisplaySettingsChanged(self.frontend.settings))
-                        .unwrap_or_else(|err| {
-                            error!("Failed to send log display settings change: {err}");
-                        });
-                }
+                add_colored_button(
+                    "Error",
+                    COLOR_ERROR,
+                    log_counts.error,
+                    self.frontend.settings.level_filter == LogLevelFilter::Error,
+                    || self.apply_filter(LogLevelFilter::Error),
+                    ui,
+                );
+                add_colored_button(
+                    "Warn",
+                    COLOR_WARNING,
+                    log_counts.warn,
+                    self.frontend.settings.level_filter == LogLevelFilter::Warn,
+                    || self.apply_filter(LogLevelFilter::Warn),
+                    ui,
+                );
+                add_colored_button(
+                    "Info",
+                    COLOR_INFO,
+                    log_counts.info,
+                    self.frontend.settings.level_filter == LogLevelFilter::Info,
+                    || self.apply_filter(LogLevelFilter::Info),
+                    ui,
+                );
+                add_colored_button(
+                    "Debug",
+                    COLOR_DEBUG,
+                    log_counts.debug,
+                    self.frontend.settings.level_filter == LogLevelFilter::Debug,
+                    || self.apply_filter(LogLevelFilter::Debug),
+                    ui,
+                );
+                add_colored_button(
+                    "Trace",
+                    COLOR_TRACE,
+                    log_counts.trace,
+                    self.frontend.settings.level_filter == LogLevelFilter::Trace,
+                    || self.apply_filter(LogLevelFilter::Trace),
+                    ui,
+                );
             });
 
             ui.separator();

@@ -8,10 +8,9 @@ pub(crate) mod prelude {
 
 use self::prelude::*;
 use async_rt::TokioEguiBridge;
-use backend::{DataPrecomputeTask, DataTaskCtrl, DisplayData, LogAppendBuf, TcpTask};
+use backend::DataToDisplay;
 use frontend::{LogDisplaySettings, UiEvent};
 use tokio::sync::mpsc::unbounded_channel;
-use tracing::{info, warn};
 use triple_buffer::triple_buffer;
 
 mod async_rt;
@@ -71,20 +70,23 @@ struct FrontendBackendComm {}
 
 impl FrontendBackendComm {
     fn split() -> (FrontendSide, BackendSide) {
-        let (data_buffer_tx, data_buffer_rx) = triple_buffer(&DisplayData::default());
+        let (data_buffer_tx, data_buffer_rx) = triple_buffer(&DataToDisplay::default());
         let (to_backend, from_frontend) = unbounded_channel::<UiEvent>();
-        let initial_settings = LogDisplaySettings::default();
+        let (from_backend, to_frontend) = unbounded_channel::<DataToDisplay>();
+        let settings = LogDisplaySettings::default();
 
         (
             FrontendSide {
                 data_buffer_rx,
                 to_backend,
-                settings: initial_settings,
+                from_backend,
+                settings,
             },
             BackendSide {
                 data_buffer_tx,
                 from_frontend,
-                settings: initial_settings,
+                to_frontend,
+                settings,
             },
         )
     }
@@ -92,14 +94,16 @@ impl FrontendBackendComm {
 
 #[derive(Debug)]
 pub struct FrontendSide {
-    pub data_buffer_rx: triple_buffer::Output<DisplayData>,
+    pub data_buffer_rx: triple_buffer::Output<DataToDisplay>,
     pub to_backend: tokio::sync::mpsc::UnboundedSender<UiEvent>,
+    pub from_backend: tokio::sync::mpsc::UnboundedSender<DataToDisplay>,
     pub settings: LogDisplaySettings,
 }
 
 #[derive(Debug)]
 pub struct BackendSide {
-    pub data_buffer_tx: triple_buffer::Input<DisplayData>,
+    pub data_buffer_tx: triple_buffer::Input<DataToDisplay>,
     pub from_frontend: tokio::sync::mpsc::UnboundedReceiver<UiEvent>,
+    pub to_frontend: tokio::sync::mpsc::UnboundedReceiver<DataToDisplay>,
     pub settings: LogDisplaySettings,
 }
