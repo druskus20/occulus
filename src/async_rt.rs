@@ -9,10 +9,7 @@ use tokio::runtime::Builder;
 use tokio_util::sync::CancellationToken;
 
 pub fn start(fut: impl futures::Future<Output = ()> + Send + 'static) -> JoinHandle<()> {
-    //fn start_async_rt(fut: impl futures::Future<Output = ()> + Send + 'static) -> JoinHandle<()> {
-    //fn start_async_rt(backend: BackendSide, tokio_egui_bridge: TokioEguiBridge) -> JoinHandle<()> {
     std::thread::spawn(move || {
-        // default number of threads in the system -1
         let num_cpus = std::thread::available_parallelism().map_or(1, NonZeroUsize::get);
         info!(
             "Using {} - {} worker threads for the tokio runtime",
@@ -22,7 +19,7 @@ pub fn start(fut: impl futures::Future<Output = ()> + Send + 'static) -> JoinHan
         let rt = Builder::new_multi_thread()
             .enable_io()
             .enable_time()
-            .worker_threads(num_cpus - 1)
+            .worker_threads(num_cpus - 1) // reserve one for gui (main) thread
             .build()
             .expect("Failed to create tokio runtime");
 

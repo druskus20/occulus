@@ -8,16 +8,16 @@ pub(crate) mod prelude {
 
 use self::prelude::*;
 use async_rt::TokioEguiBridge;
-use data_task::{DataPrecomputeTask, DataTaskCtrl, DisplayData, LogAppendBuf, TcpTask};
-use egui_app::{LogDisplaySettings, UiEvent};
+use backend::{DataPrecomputeTask, DataTaskCtrl, DisplayData, LogAppendBuf, TcpTask};
+use frontend::{LogDisplaySettings, UiEvent};
 use tokio::sync::mpsc::unbounded_channel;
 use tracing::{info, warn};
 use triple_buffer::triple_buffer;
 
 mod async_rt;
+mod backend;
 mod cli;
-mod data_task;
-pub mod egui_app;
+pub mod frontend;
 mod oneshot_notify;
 
 fn main() -> Result<()> {
@@ -46,12 +46,12 @@ fn main() -> Result<()> {
     // TOKIO - Background threads
     let tokio_thread_handle = {
         let tokio_egui_bridge = tokio_egui_bridge.clone(); // take ownership 
-        async_rt::start(async move { run_backend(backend, tokio_egui_bridge).await })
+        async_rt::start(async move { backend::run_backend(backend, tokio_egui_bridge).await })
     };
 
     // EGUI - Main thread
     match args.command {
-        cli::Command::Launch => egui_app::run_egui(frontend, tokio_egui_bridge.clone())?,
+        cli::Command::Launch => frontend::run_egui(frontend, tokio_egui_bridge.clone())?,
     };
 
     // Join the tokio threads
@@ -102,35 +102,4 @@ pub struct BackendSide {
     pub data_buffer_tx: triple_buffer::Input<DisplayData>,
     pub from_frontend: tokio::sync::mpsc::UnboundedReceiver<UiEvent>,
     pub settings: LogDisplaySettings,
-}
-
-async fn run_backend(backend: BackendSide, tokio_egui_bridge: TokioEguiBridge) {
-    let cancel = tokio_egui_bridge.cancel_token();
-
-    // Communication between tasks
-    let (to_data_ctrl, from_tcp_ctrl) = unbounded_channel::<DataTaskCtrl>(); // ctrl
-    let (incoming_logs_tx, incoming_logs_rx) = LogAppendBuf::split(); // logs
-
-    // TCP TASK
-    let _tcp_task = TcpTask::new(cancel.clone(), to_data_ctrl, incoming_logs_tx).spawn();
-
-    // DATA TASK
-    // Wait for egui to be initialized
-    let egui_ctx = tokio_egui_bridge.wait_egui_ctx().await;
-    let _data_precompute_task_handle = DataPrecomputeTask::new(
-        backend,
-        egui_ctx,
-        from_tcp_ctrl,
-        incoming_logs_rx,
-        cancel.clone(),
-    )
-    .spawn();
-
-    // Cancel
-    let cancel = tokio_egui_bridge.cancelled_fut();
-    tokio::select! {
-        _ = cancel => {
-            warn!("Tokio task cancelled, shutting down...");
-        },
-    };
 }

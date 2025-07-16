@@ -1,4 +1,5 @@
-use crate::egui_app::UiEvent;
+use crate::async_rt::TokioEguiBridge;
+use crate::frontend::UiEvent;
 use crate::{BackendSide, prelude::*};
 use argus::tracing::oculus::DashboardEvent;
 use egui::mutex::Mutex;
@@ -9,12 +10,44 @@ use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::net::TcpListener;
 use tokio::net::TcpStream;
-use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
+use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info};
 
 use std::mem;
+
+/// Runs the backend-side tasks for handling TCP connections and data processing
+pub async fn run_backend(backend: BackendSide, tokio_egui_bridge: TokioEguiBridge) {
+    let cancel = tokio_egui_bridge.cancel_token();
+
+    // Communication between tasks
+    let (to_data_ctrl, from_tcp_ctrl) = unbounded_channel::<DataTaskCtrl>(); // ctrl
+    let (incoming_logs_tx, incoming_logs_rx) = LogAppendBuf::split(); // logs
+
+    // TCP TASK
+    let _tcp_task = TcpTask::new(cancel.clone(), to_data_ctrl, incoming_logs_tx).spawn();
+
+    // DATA TASK
+    // Wait for egui to be initialized
+    let egui_ctx = tokio_egui_bridge.wait_egui_ctx().await;
+    let _data_precompute_task_handle = DataPrecomputeTask::new(
+        backend,
+        egui_ctx,
+        from_tcp_ctrl,
+        incoming_logs_rx,
+        cancel.clone(),
+    )
+    .spawn();
+
+    // Cancel
+    let cancel = tokio_egui_bridge.cancelled_fut();
+    tokio::select! {
+        _ = cancel => {
+            warn!("Tokio task cancelled, shutting down...");
+        },
+    };
+}
 
 pub struct LogAppendBuf<T> {
     phantom: std::marker::PhantomData<T>,
