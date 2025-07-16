@@ -25,6 +25,7 @@ pub struct DisplaySettings {
     pub show_span_info: bool,
     pub auto_scroll: bool,
     pub level_filter: LogLevelFilter,
+    pub wrap: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Copy)]
@@ -57,6 +58,7 @@ impl Default for DisplaySettings {
             show_span_info: false,
             auto_scroll: true,
             level_filter: LogLevelFilter::Trace,
+            wrap: false,
         }
     }
 }
@@ -122,6 +124,11 @@ fn format_fields(fields: &HashMap<String, String>) -> String {
 struct EguiApp {
     tokio_bridge: TokioEguiBridge,
     frontend_side: FrontendSide,
+
+    // Hack to detect if the wrap setting has changed
+    // and re-render the table - otherwise the layouting is wrong
+    // bcause of the horizontal scroll area
+    previous_wrap_setting: bool,
 }
 
 impl EguiApp {
@@ -163,6 +170,9 @@ impl EguiApp {
             changed |= ui
                 .checkbox(&mut self.frontend_side.settings.auto_scroll, "Auto Scroll")
                 .changed();
+            changed |= ui
+                .checkbox(&mut self.frontend_side.settings.wrap, "Wrap Text")
+                .changed();
 
             ui.separator();
         });
@@ -181,70 +191,83 @@ impl EguiApp {
 
         use egui_extras::{Column, TableBuilder};
 
-        let mut table_builder = TableBuilder::new(ui);
+        ScrollArea::horizontal().show(ui, |ui| {
+            let mut table_builder = TableBuilder::new(ui);
 
-        // Add columns based on settings
-        if self.frontend_side.settings.show_timestamps {
-            table_builder = table_builder.column(Column::auto().at_least(100.0).resizable(true)); // Timestamp
-        }
-        table_builder = table_builder.column(Column::auto().at_least(40.0).resizable(true)); // Level
-        if self.frontend_side.settings.show_targets {
-            table_builder = table_builder.column(Column::auto().resizable(true)); // Target
-        }
-        if self.frontend_side.settings.show_span_info {
-            table_builder = table_builder.column(Column::auto().at_least(60.0).resizable(true)); // Span
-        }
-        if self.frontend_side.settings.show_file_info {
-            table_builder = table_builder.column(Column::auto().resizable(true)); // File info
-        }
-        table_builder = table_builder.column(Column::remainder().at_least(200.0).resizable(true)); // Message + fields
+            // Add columns based on settings
+            if self.frontend_side.settings.show_timestamps {
+                table_builder =
+                    table_builder.column(Column::auto().at_least(100.0).resizable(true)); // Timestamp
+            }
+            table_builder = table_builder.column(Column::auto().at_least(40.0).resizable(true)); // Level
+            if self.frontend_side.settings.show_targets {
+                table_builder = table_builder.column(Column::auto().resizable(true)); // Target
+            }
+            if self.frontend_side.settings.show_span_info {
+                table_builder = table_builder.column(Column::auto().at_least(60.0).resizable(true)); // Span
+            }
+            if self.frontend_side.settings.show_file_info {
+                table_builder = table_builder.column(Column::auto().resizable(true)); // File info
+            }
 
-        table_builder
-            .auto_shrink([false; 2])
-            .cell_layout(egui::Layout::left_to_right(egui::Align::LEFT))
-            .stick_to_bottom(self.frontend_side.settings.auto_scroll)
-            .header(20.0, |mut header| {
-                if self.frontend_side.settings.show_timestamps {
-                    header.col(|ui| {
-                        ui.label("Timestamp");
-                    });
-                }
-                header.col(|ui| {
-                    ui.label("Level");
-                });
-                if self.frontend_side.settings.show_targets {
-                    header.col(|ui| {
-                        ui.label("Target");
-                    });
-                }
-                if self.frontend_side.settings.show_span_info {
-                    header.col(|ui| {
-                        ui.label("Span Info");
-                    });
-                }
-                if self.frontend_side.settings.show_file_info {
-                    header.col(|ui| {
-                        ui.label("File Info");
-                    });
-                }
-                header.col(|ui| {
-                    ui.label("Message");
-                });
-            })
-            .body(|mut body| {
-                let num_rows = logs.len();
-                body.rows(row_height, num_rows, |mut row| {
-                    let row_index = row.index();
-                    if let Some(event) = logs.get(row_index) {
-                        display_log_line_columns(
-                            &mut row,
-                            event,
-                            self.frontend_side.settings,
-                            self.frontend_side.to_backend.clone(),
-                        );
+            // hack to force re-layout if wrap setting changed, otherwise the horizontal scroll
+            // area does not force the column to shrink
+            let wrap_setting_changed =
+                self.frontend_side.settings.wrap != self.previous_wrap_setting;
+            let msg_col = Column::remainder()
+                .at_least(200.0)
+                .resizable(true)
+                .clip(wrap_setting_changed);
+
+            table_builder = table_builder.column(msg_col); // Message + fields
+
+            table_builder
+                .auto_shrink([false; 2])
+                .cell_layout(egui::Layout::left_to_right(egui::Align::LEFT))
+                .stick_to_bottom(self.frontend_side.settings.auto_scroll)
+                .header(20.0, |mut header| {
+                    if self.frontend_side.settings.show_timestamps {
+                        header.col(|ui| {
+                            ui.label("Timestamp");
+                        });
                     }
+                    header.col(|ui| {
+                        ui.label("Level");
+                    });
+                    if self.frontend_side.settings.show_targets {
+                        header.col(|ui| {
+                            ui.label("Target");
+                        });
+                    }
+                    if self.frontend_side.settings.show_span_info {
+                        header.col(|ui| {
+                            ui.label("Span Info");
+                        });
+                    }
+                    if self.frontend_side.settings.show_file_info {
+                        header.col(|ui| {
+                            ui.label("File Info");
+                        });
+                    }
+                    header.col(|ui| {
+                        ui.label("Message");
+                    });
+                })
+                .body(|mut body| {
+                    let num_rows = logs.len();
+                    body.rows(row_height, num_rows, |mut row| {
+                        let row_index = row.index();
+                        if let Some(event) = logs.get(row_index) {
+                            display_log_line_columns(
+                                &mut row,
+                                event,
+                                self.frontend_side.settings,
+                                self.frontend_side.to_backend.clone(),
+                            );
+                        }
+                    });
                 });
-            });
+        });
     }
 }
 
@@ -280,6 +303,7 @@ impl EguiApp {
         tokio_egui_bridge.register_egui_context(ctx);
         Self {
             tokio_bridge: tokio_egui_bridge,
+            previous_wrap_setting: frontend.settings.wrap,
             frontend_side: frontend,
         }
     }
@@ -287,6 +311,7 @@ impl EguiApp {
 
 impl eframe::App for EguiApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.previous_wrap_setting = self.frontend_side.settings.wrap;
         // Single update for the entire frame. From here onwwards we use output_buffer_mut() to
         // get the latest data.
         self.frontend_side.data_buffer_rx.update();
@@ -502,6 +527,10 @@ pub fn display_log_line_columns(
             );
         }
 
-        ui.label(message_job);
+        if settings.wrap {
+            ui.add(egui::Label::new(message_job).wrap());
+        } else {
+            ui.add(egui::Label::new(message_job));
+        }
     });
 }
