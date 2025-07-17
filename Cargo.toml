@@ -45,6 +45,7 @@ egui = { version = "0.31" }
 egui_extras = { version = "0.31" }
 egui-notify = { version = "0.19" }                 # egui 0.31
 chrono = { version = "0.4", features = ["serde"] }
+sysinfo = "0.36.0"
 
 [features]
 tracy-profiler = ["argus/tracy-profiler"]

@@ -1,8 +1,7 @@
 use crate::{FrontendSide, TokioEguiBridge, prelude::*};
 use argus::tracing::oculus::{DashboardEvent, Level};
 use eframe::egui;
-use egui::{Button, Shadow, text::LayoutJob};
-use egui_extras::TableBuilder;
+use egui::{Button, text::LayoutJob};
 
 // Add the tracing log display module
 use egui::{Color32, RichText, ScrollArea, TextFormat as EguiTextFormat, Ui};
@@ -14,7 +13,7 @@ const COLOR_INFO: Color32 = Color32::from_rgb(80, 250, 123); // neon green
 const COLOR_DEBUG: Color32 = Color32::from_rgb(139, 233, 253); // cyan
 const COLOR_TRACE: Color32 = Color32::from_rgb(189, 147, 249); // light purple
 
-const COLOR_LIHT_PURPLE: Color32 = Color32::from_rgb(189, 147, 249); // light purple
+const _COLOR_LIHT_PURPLE: Color32 = Color32::from_rgb(189, 147, 249); // light purple
 const COLOR_LIGHT_MAGENTA: Color32 = Color32::from_rgb(255, 121, 198); // light magenta
 
 const _COLOR_TEXT: Color32 = Color32::from_rgb(255, 255, 255); // white text on dark backgrounds
@@ -156,31 +155,27 @@ impl EguiApp {
     fn show_controls(&mut self, ui: &mut Ui) -> bool {
         let mut changed = false;
 
-        ui.horizontal(|ui| {
-            changed |= ui
-                .checkbox(
-                    &mut self.frontend_side.settings.show_timestamps,
-                    "Timestamps",
-                )
-                .changed();
-            changed |= ui
-                .checkbox(&mut self.frontend_side.settings.show_targets, "Targets")
-                .changed();
-            changed |= ui
-                .checkbox(&mut self.frontend_side.settings.show_file_info, "File Info")
-                .changed();
-            changed |= ui
-                .checkbox(&mut self.frontend_side.settings.show_span_info, "Span Info")
-                .changed();
-            changed |= ui
-                .checkbox(&mut self.frontend_side.settings.auto_scroll, "Auto Scroll")
-                .changed();
-            changed |= ui
-                .checkbox(&mut self.frontend_side.settings.wrap, "Wrap Text")
-                .changed();
-
-            ui.separator();
-        });
+        changed |= ui
+            .checkbox(
+                &mut self.frontend_side.settings.show_timestamps,
+                "Timestamps",
+            )
+            .changed();
+        changed |= ui
+            .checkbox(&mut self.frontend_side.settings.show_targets, "Targets")
+            .changed();
+        changed |= ui
+            .checkbox(&mut self.frontend_side.settings.show_file_info, "File Info")
+            .changed();
+        changed |= ui
+            .checkbox(&mut self.frontend_side.settings.show_span_info, "Span Info")
+            .changed();
+        changed |= ui
+            .checkbox(&mut self.frontend_side.settings.auto_scroll, "Auto Scroll")
+            .changed();
+        changed |= ui
+            .checkbox(&mut self.frontend_side.settings.wrap, "Wrap Text")
+            .changed();
 
         changed
     }
@@ -202,17 +197,21 @@ impl EguiApp {
             // Add columns based on settings
             if self.frontend_side.settings.show_timestamps {
                 table_builder =
-                    table_builder.column(Column::auto().at_least(100.0).resizable(true)); // Timestamp
+                    table_builder.column(Column::auto().at_least(100.0).resizable(true));
+                // Timestamp
             }
             table_builder = table_builder.column(Column::auto().at_least(40.0).resizable(true)); // Level
             if self.frontend_side.settings.show_targets {
-                table_builder = table_builder.column(Column::auto().resizable(true)); // Target
+                table_builder = table_builder.column(Column::auto().resizable(true));
+                // Target
             }
             if self.frontend_side.settings.show_span_info {
-                table_builder = table_builder.column(Column::auto().at_least(60.0).resizable(true)); // Span
+                table_builder = table_builder.column(Column::auto().at_least(60.0).resizable(true));
+                // Span
             }
             if self.frontend_side.settings.show_file_info {
-                table_builder = table_builder.column(Column::auto().resizable(true)); // File info
+                table_builder = table_builder.column(Column::auto().resizable(true));
+                // File info
             }
 
             // hack to force re-layout if wrap setting changed, otherwise the horizontal scroll
@@ -338,17 +337,29 @@ impl eframe::App for EguiApp {
             ui.separator();
 
             // DISPLAY SETTINGS
-            let settings_changed = self.show_controls(ui);
-            if settings_changed {
-                self.frontend_side
-                    .to_backend
-                    .send(UiEvent::LogDisplaySettingsChanged(
-                        self.frontend_side.settings,
-                    ))
-                    .unwrap_or_else(|err| {
-                        error!("Failed to send log display settings change: {err}");
-                    });
-            }
+            ui.horizontal(|ui| {
+                let settings_changed = self.show_controls(ui);
+                if settings_changed {
+                    self.frontend_side
+                        .to_backend
+                        .send(UiEvent::LogDisplaySettingsChanged(
+                            self.frontend_side.settings,
+                        ))
+                        .unwrap_or_else(|err| {
+                            error!("Failed to send log display settings change: {err}");
+                        });
+                }
+                ui.separator();
+
+                // memory usage
+                let memory_usage = self
+                    .frontend_side
+                    .data_buffer_rx
+                    .output_buffer_mut()
+                    .oculus_memory_usage_mb;
+
+                ui.label(format!("Memory Usage: {memory_usage:.2} MB"));
+            });
 
             ui.separator();
 
@@ -490,7 +501,7 @@ pub fn display_log_line_columns(
         row.col(|ui| {
             if let (Some(file_path), Some(line_num)) = (&event.file, event.line) {
                 let PathParts { project, file } = path_parts(file_path);
-                let file_info = format!("{}:{}", file, line_num);
+                let file_info = format!("{file}:{line_num}");
 
                 ui.label(
                     egui::RichText::new(project)

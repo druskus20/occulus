@@ -9,6 +9,7 @@ use std::process::Command;
 use std::sync::Arc;
 use std::time::Duration;
 use std::{env, mem};
+use sysinfo::System;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::net::TcpListener;
 use tokio::net::TcpStream;
@@ -119,6 +120,9 @@ pub struct DataPrecomputeTask {
 
     backend_side: BackendSide,
     egui_ctx: egui::Context,
+
+    memory_tracker: MemoryTracker,
+
     #[allow(unused)]
     cancel: CancellationToken,
 }
@@ -204,6 +208,7 @@ impl DataPrecomputeTask {
             egui_ctx,
             backend_side: backend,
             cancel,
+            memory_tracker: MemoryTracker::default(),
         }
     }
 
@@ -302,9 +307,11 @@ impl DataPrecomputeTask {
         self.filtered_logs.extend(filtered_new_logs);
 
         // All the logs - we cannot extend, becasue how triple_buffer is implemented
+        let oculus_memory_usage_mb = self.memory_tracker.calc_memory_usage_mb();
         *self.backend_side.data_buffer_tx.input_buffer_mut() = DataToDisplay {
             filtered_logs: self.filtered_logs.clone(),
             log_counts: LogCounts::from_logs(&self.all_logs),
+            oculus_memory_usage_mb,
         };
         self.backend_side.data_buffer_tx.publish();
         self.egui_ctx.request_repaint();
@@ -379,9 +386,11 @@ impl DataPrecomputeTask {
             .cloned()
             .collect::<VecDeque<_>>();
 
+        let oculus_memory_usage_mb = self.memory_tracker.calc_memory_usage_mb();
         *self.backend_side.data_buffer_tx.input_buffer_mut() = DataToDisplay {
             filtered_logs,
             log_counts: log_count,
+            oculus_memory_usage_mb,
         };
         // Refresh the triple buffer to reflect the new settings
         self.backend_side.data_buffer_tx.publish();
@@ -413,6 +422,8 @@ pub struct DataToDisplay {
     // The logs are not actually stored here, so clone is cheap
     pub filtered_logs: LogCollection,
     pub log_counts: LogCounts,
+
+    pub oculus_memory_usage_mb: f64,
 }
 
 #[derive(Debug, Clone, Default, Copy)]
@@ -439,5 +450,36 @@ impl LogCounts {
             counts.total += 1;
         }
         counts
+    }
+}
+
+struct MemoryTracker {
+    sys: System,
+    pid: sysinfo::Pid,
+}
+
+impl Default for MemoryTracker {
+    fn default() -> Self {
+        let sys = System::new();
+        let pid = sysinfo::get_current_pid().expect("Bug: Failed to get current PID");
+        Self { sys, pid }
+    }
+}
+
+impl MemoryTracker {
+    fn refresh_processes(&mut self) {
+        let _r = self
+            .sys
+            .refresh_processes(sysinfo::ProcessesToUpdate::Some(&[self.pid]), true);
+    }
+
+    fn calc_memory_usage_mb(&mut self) -> f64 {
+        self.refresh_processes();
+        if let Some(proc) = self.sys.process(self.pid) {
+            // memory is in Bytes → convert to MB with decimals
+            proc.memory() as f64 / (1024.0 * 1024.0)
+        } else {
+            0.0
+        }
     }
 }
