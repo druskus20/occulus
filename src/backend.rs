@@ -372,6 +372,25 @@ impl DataPrecomputeTask {
                 }
                 open_in_nvim(&path.to_string_lossy(), line);
             }
+            UiEvent::Clear => {
+                info!("Clearing all logs");
+                self.all_logs.clear();
+                self.filtered_logs.clear();
+                // Reset the data buffer
+                self.backend_side
+                    .data_buffer_tx
+                    .input_buffer_mut()
+                    .filtered_logs
+                    .clear();
+                self.backend_side
+                    .data_buffer_tx
+                    .input_buffer_mut()
+                    .log_counts
+                    .reset();
+
+                self.backend_side.data_buffer_tx.publish();
+                self.egui_ctx.request_repaint();
+            }
         }
     }
 
@@ -450,6 +469,10 @@ impl LogCounts {
             counts.total += 1;
         }
         counts
+    }
+
+    fn reset(&mut self) {
+        *self = LogCounts::default();
     }
 }
 

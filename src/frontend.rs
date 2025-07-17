@@ -4,7 +4,7 @@ use eframe::egui;
 use egui::{Button, text::LayoutJob};
 
 // Add the tracing log display module
-use egui::{Color32, RichText, ScrollArea, TextFormat as EguiTextFormat, Ui};
+use egui::{Color32, RichText, ScrollArea, Separator, TextFormat as EguiTextFormat, Ui};
 use std::collections::HashMap;
 
 const COLOR_ERROR: Color32 = Color32::from_rgb(255, 85, 85); // soft red
@@ -351,14 +351,31 @@ impl eframe::App for EguiApp {
                 }
                 ui.separator();
 
-                // memory usage
-                let memory_usage = self
-                    .frontend_side
-                    .data_buffer_rx
-                    .output_buffer_mut()
-                    .oculus_memory_usage_mb;
+                // align to the right
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::LEFT), |ui| {
+                    // Clear logs button
+                    ui.button("Clear")
+                        .on_hover_text("Clear all logs")
+                        .clicked()
+                        .then(|| {
+                            self.frontend_side
+                                .to_backend
+                                .send(UiEvent::Clear)
+                                .unwrap_or_else(|err| {
+                                    error!("Failed to send log display settings change: {err}");
+                                });
+                        });
+                    ui.horizontal(|ui| {
+                        // memory usage
+                        let memory_usage = self
+                            .frontend_side
+                            .data_buffer_rx
+                            .output_buffer_mut()
+                            .oculus_memory_usage_mb;
 
-                ui.label(format!("Memory Usage: {memory_usage:.2} MB"));
+                        ui.label(format!("Memory Usage: {memory_usage:.2} MB"));
+                    });
+                });
             });
 
             ui.separator();
@@ -434,6 +451,7 @@ impl eframe::App for EguiApp {
 pub enum UiEvent {
     LogDisplaySettingsChanged(DisplaySettings),
     OpenInEditor { path: String, line: u32 },
+    Clear,
 }
 
 pub fn display_log_line_columns(
