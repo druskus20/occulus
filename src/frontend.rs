@@ -4,9 +4,8 @@ use eframe::egui;
 use egui::{Button, text::LayoutJob};
 
 // Add the tracing log display module
-use egui::{Color32, RichText, ScrollArea, Separator, TextEdit, TextFormat as EguiTextFormat, Ui};
+use egui::{Color32, RichText, ScrollArea, TextFormat as EguiTextFormat, Ui};
 use std::collections::HashMap;
-use std::sync::Arc;
 
 const COLOR_ERROR: Color32 = Color32::from_rgb(255, 85, 85); // soft red
 const COLOR_WARNING: Color32 = Color32::from_rgb(255, 204, 0); // amber

@@ -17,6 +17,7 @@ mod async_rt;
 mod backend;
 mod cli;
 pub mod frontend;
+pub mod frontend2;
 mod oneshot_notify;
 
 fn main() -> Result<()> {
@@ -53,7 +54,7 @@ fn main() -> Result<()> {
 
     // EGUI - Main thread
     match args.command {
-        cli::Command::Launch => frontend::run_egui(frontend, tokio_egui_bridge.clone())?,
+        cli::Command::Launch => frontend2::run_egui(frontend, tokio_egui_bridge.clone())?,
     };
 
     // Join the tokio threads
