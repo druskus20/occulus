@@ -528,6 +528,7 @@ impl MemoryTracker {
     }
 }
 
+// Should be fast
 fn contains_case_insensitive(haystack: &str, needle: &str) -> bool {
     let needle_len = needle.len();
     if needle_len == 0 {

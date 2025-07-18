@@ -194,14 +194,6 @@ impl EguiApp {
         });
         changed |= button.clicked();
 
-        changed |= ui
-            .radio_value(
-                &mut self.frontend_side.settings.level_filter,
-                LogLevelFilter::Trace,
-                "Trace",
-            )
-            .changed();
-
         changed
     }
 
