@@ -274,7 +274,7 @@ impl DataPrecomputeTask {
     #[tracing::instrument(skip_all)]
     pub async fn publish_new_logs(&mut self) -> Result<()> {
         trace!("Publishing new logs to EGUI context");
-        let log_display_settings = self.backend_side.settings;
+        let log_display_settings = self.backend_side.settings.clone();
 
         // Process new logs from the tcp task
         // order here avoids unnecessary clone
@@ -287,7 +287,17 @@ impl DataPrecomputeTask {
         let filtered_new_logs = new_logs
             .iter()
             // Filter with the current log display settings
-            .filter(|event| event.level >= log_display_settings.level_filter.into())
+            .filter(|event| {
+                (event.level >= log_display_settings.level_filter.into())
+                    && if !self.backend_side.settings.search_string.is_empty() {
+                        contains_case_insensitive(
+                            event.message.as_str(),
+                            self.backend_side.settings.search_string.as_str(),
+                        )
+                    } else {
+                        true
+                    }
+            })
             .cloned()
             .collect::<Vec<_>>();
 
@@ -360,6 +370,7 @@ impl DataPrecomputeTask {
 
         match event {
             UiEvent::LogDisplaySettingsChanged(new_settings) => {
+                info!("Received new log display settings: {:?}", new_settings);
                 self.backend_side.settings = new_settings;
                 self.filter_and_refresh_egui_buf().await;
             }
@@ -401,7 +412,17 @@ impl DataPrecomputeTask {
         let log_count = LogCounts::from_logs(all_logs);
         let filtered_logs = all_logs
             .iter()
-            .filter(|&event| event.level >= self.backend_side.settings.level_filter.into())
+            .filter(|event| {
+                (event.level >= self.backend_side.settings.level_filter.into())
+                    && if !self.backend_side.settings.search_string.is_empty() {
+                        contains_case_insensitive(
+                            event.message.as_str(),
+                            self.backend_side.settings.search_string.as_str(),
+                        )
+                    } else {
+                        true
+                    }
+            })
             .cloned()
             .collect::<VecDeque<_>>();
 
@@ -505,4 +526,16 @@ impl MemoryTracker {
             0.0
         }
     }
+}
+
+fn contains_case_insensitive(haystack: &str, needle: &str) -> bool {
+    let needle_len = needle.len();
+    if needle_len == 0 {
+        return true;
+    }
+
+    haystack
+        .as_bytes()
+        .windows(needle_len)
+        .any(|w| w.eq_ignore_ascii_case(needle.as_bytes()))
 }

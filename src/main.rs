@@ -83,13 +83,13 @@ impl FrontendBackendComm {
                 data_buffer_rx,
                 to_backend,
                 from_backend,
-                settings,
+                settings: settings.clone(),
             },
             BackendSide {
                 data_buffer_tx,
                 from_frontend,
                 to_frontend,
-                settings,
+                settings: settings.clone(),
             },
         )
     }

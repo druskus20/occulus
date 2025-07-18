@@ -4,8 +4,9 @@ use eframe::egui;
 use egui::{Button, text::LayoutJob};
 
 // Add the tracing log display module
-use egui::{Color32, RichText, ScrollArea, Separator, TextFormat as EguiTextFormat, Ui};
+use egui::{Color32, RichText, ScrollArea, Separator, TextEdit, TextFormat as EguiTextFormat, Ui};
 use std::collections::HashMap;
+use std::sync::Arc;
 
 const COLOR_ERROR: Color32 = Color32::from_rgb(255, 85, 85); // soft red
 const COLOR_WARNING: Color32 = Color32::from_rgb(255, 204, 0); // amber
@@ -19,8 +20,9 @@ const COLOR_LIGHT_MAGENTA: Color32 = Color32::from_rgb(255, 121, 198); // light 
 const _COLOR_TEXT: Color32 = Color32::from_rgb(255, 255, 255); // white text on dark backgrounds
 const COLOR_TEXT_INV: Color32 = Color32::from_rgb(0, 0, 0); // black text on colored backgrounds
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct DisplaySettings {
+    pub search_string: String,
     pub show_timestamps: bool,
     pub show_targets: bool,
     pub show_file_info: bool,
@@ -54,6 +56,7 @@ impl From<LogLevelFilter> for argus::tracing::oculus::Level {
 impl Default for DisplaySettings {
     fn default() -> Self {
         Self {
+            search_string: "".to_string(),
             show_timestamps: false,
             show_targets: false,
             show_file_info: false,
@@ -142,7 +145,7 @@ impl EguiApp {
             self.frontend_side
                 .to_backend
                 .send(UiEvent::LogDisplaySettingsChanged(
-                    self.frontend_side.settings,
+                    self.frontend_side.settings.clone(),
                 ))
                 .unwrap_or_else(|err| {
                     error!("Failed to send log display settings change: {err}");
@@ -175,6 +178,28 @@ impl EguiApp {
             .changed();
         changed |= ui
             .checkbox(&mut self.frontend_side.settings.wrap, "Wrap Text")
+            .changed();
+
+        ui.separator();
+
+        ui.label("Search:");
+        changed |= ui
+            .text_edit_singleline(&mut self.frontend_side.settings.search_string)
+            .changed();
+        // clear
+        let button = ui.button("Clear").on_hover_text("Clear search");
+        button.clicked().then(|| {
+            self.frontend_side.settings.search_string.clear();
+            changed = true;
+        });
+        changed |= button.clicked();
+
+        changed |= ui
+            .radio_value(
+                &mut self.frontend_side.settings.level_filter,
+                LogLevelFilter::Trace,
+                "Trace",
+            )
             .changed();
 
         changed
@@ -267,7 +292,7 @@ impl EguiApp {
                                 &mut self.toasts,
                                 &mut row,
                                 event,
-                                self.frontend_side.settings,
+                                self.frontend_side.settings.clone(),
                                 self.frontend_side.to_backend.clone(),
                             );
                         }
@@ -343,7 +368,7 @@ impl eframe::App for EguiApp {
                     self.frontend_side
                         .to_backend
                         .send(UiEvent::LogDisplaySettingsChanged(
-                            self.frontend_side.settings,
+                            self.frontend_side.settings.clone(),
                         ))
                         .unwrap_or_else(|err| {
                             error!("Failed to send log display settings change: {err}");
