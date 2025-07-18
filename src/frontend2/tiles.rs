@@ -117,6 +117,8 @@ impl egui_tiles::Behavior<Pane> for TreeBehavior {
         _tabs: &egui_tiles::Tabs,
         _scroll_offset: &mut f32,
     ) {
+        // Direction is reversed, right to left
+        ui.add_space(4.0);
         if ui.button("+").clicked() {
             self.add_child_to = Some(tile_id);
         }
@@ -135,7 +137,8 @@ impl egui_tiles::Behavior<Pane> for TreeBehavior {
     }
 
     fn is_tab_closable(&self, _tiles: &Tiles<Pane>, _tile_id: TileId) -> bool {
-        true
+        // only if it's not the last tab
+        if _tiles.len() > 1 { true } else { false }
     }
 
     fn on_tab_close(&mut self, tiles: &mut Tiles<Pane>, tile_id: TileId) -> bool {
