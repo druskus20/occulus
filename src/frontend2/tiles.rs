@@ -1,19 +1,28 @@
 pub struct TabbedLayout {
     tree: egui_tiles::Tree<Pane>,
     behavior: TreeBehavior,
+
+    next_panel_id: AtomicUsize,
 }
 
 impl TabbedLayout {
     pub fn new() -> Self {
         let tree = create_tree();
         let behavior = TreeBehavior::default();
-        Self { tree, behavior }
+        Self {
+            tree,
+            behavior,
+            next_panel_id: AtomicUsize::new(0),
+        }
     }
 
     pub fn ui(&mut self, ui: &mut egui::Ui) {
         self.tree.ui(&mut self.behavior, ui);
         if let Some(parent) = self.behavior.add_child_to.take() {
-            let new_child = self.tree.tiles.insert_pane(Pane::with_nr(100));
+            let new_child = self.tree.tiles.insert_pane(Pane::with_nr(
+                self.next_panel_id
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+            ));
             if let Some(egui_tiles::Tile::Container(egui_tiles::Container::Tabs(tabs))) =
                 self.tree.tiles.get_mut(parent)
             {
@@ -23,6 +32,8 @@ impl TabbedLayout {
         }
     }
 }
+
+use std::sync::atomic::AtomicUsize;
 
 use egui_tiles::{Tile, TileId, Tiles};
 
@@ -75,11 +86,6 @@ impl TreeBehavior {
                 ui.end_row();
 
                 ui.label("Tab bar height:");
-                //ui.add(
-                //    egui::DragValue::new(tab_bar_height)
-                //        .range(0.0..=100.0)
-                //        .speed(1.0),
-                //);
                 ui.end_row();
 
                 ui.label("Gap width:");
@@ -197,12 +203,11 @@ pub fn create_tree() -> egui_tiles::Tree<Pane> {
     // Create panes first
     let pane1 = tiles.insert_pane(gen_pane());
     let pane2 = tiles.insert_pane(gen_pane());
-    let pane3 = tiles.insert_pane(gen_pane());
     let pane4 = tiles.insert_pane(gen_pane());
 
     // Wrap each group of panes in their own tab tile
     let tab1 = tiles.insert_tab_tile(vec![pane1]);
-    let tab2 = tiles.insert_tab_tile(vec![pane2, pane3]);
+    let tab2 = tiles.insert_tab_tile(vec![pane2]);
     let tab3 = tiles.insert_tab_tile(vec![pane4]);
 
     // Make a top-level tab tile to hold all of them
