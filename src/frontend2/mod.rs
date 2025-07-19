@@ -1,13 +1,6 @@
 use tiles::Tabs;
-use tokio::sync::mpsc::unbounded_channel;
-use triple_buffer::triple_buffer;
 
-use crate::{
-    FrontendSide, TokioEguiBridge,
-    backend::{DataToDisplay, LogCounts},
-    frontend::{Level, UiEvent},
-    prelude::*,
-};
+use crate::{TokioEguiBridge, backend::TopLevelBackendEvent, frontend::UiEvent, prelude::*};
 
 mod tiles;
 
@@ -26,24 +19,41 @@ pub(super) mod colors {
     const COLOR_TEXT_INV: Color32 = Color32::from_rgb(0, 0, 0); // black text on colored backgrounds
 }
 
-pub fn run_egui(frontend_side: FrontendSide, tokio_egui_bridge: TokioEguiBridge) -> Result<()> {
+pub fn run_egui(
+    to_backend: tokio::sync::mpsc::UnboundedSender<TopLevelFrontendEvent>,
+    from_backend: tokio::sync::mpsc::UnboundedReceiver<TopLevelBackendEvent>,
+    tokio_egui_bridge: TokioEguiBridge,
+) -> Result<()> {
     eframe::run_native(
-        "Tracing Log Viewer",
+        "Oculus",
         eframe::NativeOptions::default(),
-        Box::new(|cc| Ok(Box::new(EguiApp::init(frontend_side, tokio_egui_bridge)))),
+        Box::new(|cc| {
+            Ok(Box::new(EguiApp {
+                tokio_bridge: tokio_egui_bridge,
+                to_backend,
+                from_backend,
+                tabs: Tabs::new(),
+            }))
+        }),
     )
     .expect("Failed to launch eframe app");
     Ok(())
 }
-impl FrontendSide {}
 
 struct EguiApp {
     tokio_bridge: TokioEguiBridge,
 
     /// Shared data and channels for communication with the backend
-    frontend_side: FrontendSide,
+    to_backend: tokio::sync::mpsc::UnboundedSender<TopLevelFrontendEvent>,
+
+    from_backend: tokio::sync::mpsc::UnboundedReceiver<TopLevelBackendEvent>,
 
     tabs: Tabs,
+}
+#[derive(Debug)]
+pub enum TopLevelFrontendEvent {
+    OpenStream { on_pane_id: usize },
+    CloseStream { on_pane_id: usize },
 }
 
 /// Controls different actions throught the rendering of one frame.
@@ -53,14 +63,6 @@ pub struct FrameState {
 }
 
 impl EguiApp {
-    fn init(frontend_side: FrontendSide, tokio_bridge: TokioEguiBridge) -> Self {
-        Self {
-            frontend_side,
-            tokio_bridge,
-            tabs: Tabs::new(),
-        }
-    }
-
     /// Acts on a framestate after the UI has been rendered.
     fn process_framestate(&mut self, frame_state: FrameState) {
         if let Some(tile_id) = frame_state.add_child_to {
@@ -82,83 +84,5 @@ impl eframe::App for EguiApp {
             self.tabs.ui(ui, &mut frame_state);
         });
         self.process_framestate(frame_state);
-    }
-}
-
-struct BakcendEvent {}
-
-struct FrontendBackendComm;
-
-struct ToBackendCommForStream<'a> {
-    pub stream_id: usize,
-    pub data_buffer_rx: triple_buffer::Output<DataToDisplay>,
-    pub to_backend: tokio::sync::mpsc::UnboundedSender<UiEvent>,
-    pub from_backend: tokio::sync::mpsc::UnboundedSender<BakcendEvent>,
-    pub settings: DisplaySettings<'a>,
-}
-struct ToFrontendCommForStream<'a> {
-    pub stream_id: usize,
-    pub data_buffer_tx: triple_buffer::Input<DataToDisplay>,
-    pub from_frontend: tokio::sync::mpsc::UnboundedReceiver<UiEvent>,
-    pub to_frontend: tokio::sync::mpsc::UnboundedReceiver<BakcendEvent>,
-    pub settings: DisplaySettings<'a>,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub struct DisplaySettings<'a> {
-    pub search_string: &'a str,
-    pub show_timestamps: bool,
-    pub show_targets: bool,
-    pub show_file_info: bool,
-    pub show_span_info: bool,
-    pub auto_scroll: bool,
-    pub level_filter: Level,
-    pub wrap: bool,
-}
-
-impl Default for DisplaySettings<'_> {
-    fn default() -> Self {
-        Self {
-            search_string: "",
-            show_timestamps: true,
-            show_targets: true,
-            show_file_info: true,
-            show_span_info: true,
-            auto_scroll: true,
-            level_filter: Level::Trace,
-            wrap: false,
-        }
-    }
-}
-struct Logs {}
-
-pub struct StreamData {
-    pub filtered_logs: Logs,
-    pub log_counts: LogCounts,
-}
-
-impl<'a> FrontendBackendComm {
-    fn for_stream(stream_id: usize) -> (ToBackendCommForStream<'a>, ToFrontendCommForStream<'a>) {
-        let (data_buffer_tx, data_buffer_rx) = triple_buffer(&DataToDisplay::default());
-        let (to_backend, from_frontend) = unbounded_channel::<UiEvent>();
-        let (from_backend, to_frontend) = unbounded_channel::<BakcendEvent>();
-        let settings = DisplaySettings::default();
-
-        (
-            ToBackendCommForStream {
-                stream_id,
-                data_buffer_rx,
-                to_backend,
-                from_backend,
-                settings,
-            },
-            ToFrontendCommForStream {
-                stream_id,
-                data_buffer_tx,
-                from_frontend,
-                to_frontend,
-                settings,
-            },
-        )
     }
 }

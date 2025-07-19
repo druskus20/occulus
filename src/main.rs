@@ -8,14 +8,15 @@ pub(crate) mod prelude {
 
 use self::prelude::*;
 use async_rt::TokioEguiBridge;
-use backend::DataToDisplay;
-use frontend::{DisplaySettings, UiEvent};
+use backend::TopLevelBackendEvent;
+use frontend2::TopLevelFrontendEvent;
 use tokio::sync::mpsc::unbounded_channel;
 use triple_buffer::triple_buffer;
 
 mod async_rt;
 mod backend;
 mod cli;
+mod data;
 pub mod frontend;
 pub mod frontend2;
 mod oneshot_notify;
@@ -41,20 +42,23 @@ fn main() -> Result<()> {
         }
     });
 
-    let (frontend, backend) = FrontendBackendComm::split();
+    let (to_backend, from_frontend) = unbounded_channel::<TopLevelFrontendEvent>();
+    let (to_frontend, from_backend) = unbounded_channel::<TopLevelBackendEvent>();
 
     // TOKIO - Background threads
     let tokio_thread_handle = {
         let tokio_egui_bridge = tokio_egui_bridge.clone(); // take ownership 
         async_rt::start(tokio_egui_bridge.clone(), async move {
             // Register the Egui context with the bridge
-            backend::run_backend(backend, tokio_egui_bridge).await
+            backend::run_backend(from_frontend, to_frontend, tokio_egui_bridge).await
         })
     };
 
     // EGUI - Main thread
     match args.command {
-        cli::Command::Launch => frontend2::run_egui(frontend, tokio_egui_bridge.clone())?,
+        cli::Command::Launch => {
+            frontend2::run_egui(to_backend, from_backend, tokio_egui_bridge.clone())?
+        }
     };
 
     // Join the tokio threads
@@ -65,49 +69,4 @@ fn main() -> Result<()> {
     info!("Tokio thread finished successfully.");
 
     Ok(())
-}
-
-// Frontend and backend communication
-// 1) It allows the background tokio tasks to publish data to the GUI
-// 2) it allos the GUI to send events to the tokio tasks (i.e. Settings changed, start/stop...)
-struct FrontendBackendComm {}
-
-impl FrontendBackendComm {
-    fn split() -> (FrontendSide, BackendSide) {
-        let (data_buffer_tx, data_buffer_rx) = triple_buffer(&DataToDisplay::default());
-        let (to_backend, from_frontend) = unbounded_channel::<UiEvent>();
-        let (from_backend, to_frontend) = unbounded_channel::<DataToDisplay>();
-        let settings = DisplaySettings::default();
-
-        (
-            FrontendSide {
-                data_buffer_rx,
-                to_backend,
-                from_backend,
-                settings: settings.clone(),
-            },
-            BackendSide {
-                data_buffer_tx,
-                from_frontend,
-                to_frontend,
-                settings: settings.clone(),
-            },
-        )
-    }
-}
-
-#[derive(Debug)]
-pub struct FrontendSide {
-    pub data_buffer_rx: triple_buffer::Output<DataToDisplay>,
-    pub to_backend: tokio::sync::mpsc::UnboundedSender<UiEvent>,
-    pub from_backend: tokio::sync::mpsc::UnboundedSender<DataToDisplay>,
-    pub settings: DisplaySettings,
-}
-
-#[derive(Debug)]
-pub struct BackendSide {
-    pub data_buffer_tx: triple_buffer::Input<DataToDisplay>,
-    pub from_frontend: tokio::sync::mpsc::UnboundedReceiver<UiEvent>,
-    pub to_frontend: tokio::sync::mpsc::UnboundedReceiver<DataToDisplay>,
-    pub settings: DisplaySettings,
 }

@@ -1,3 +1,4 @@
+use crate::data::DisplaySettings;
 use crate::{FrontendSide, TokioEguiBridge, prelude::*};
 use argus::tracing::oculus::DashboardEvent;
 use eframe::egui;
@@ -18,18 +19,6 @@ const COLOR_LIGHT_MAGENTA: Color32 = Color32::from_rgb(255, 121, 198); // light 
 
 const _COLOR_TEXT: Color32 = Color32::from_rgb(255, 255, 255); // white text on dark backgrounds
 const COLOR_TEXT_INV: Color32 = Color32::from_rgb(0, 0, 0); // black text on colored backgrounds
-
-#[derive(Debug, Clone)]
-pub struct DisplaySettings {
-    pub search_string: String,
-    pub show_timestamps: bool,
-    pub show_targets: bool,
-    pub show_file_info: bool,
-    pub show_span_info: bool,
-    pub auto_scroll: bool,
-    pub level_filter: Level,
-    pub wrap: bool,
-}
 
 #[derive(Debug, Clone, PartialEq, Copy)]
 pub enum Level {
@@ -64,22 +53,10 @@ impl From<Level> for argus::tracing::oculus::Level {
     }
 }
 
-impl Default for DisplaySettings {
-    fn default() -> Self {
-        Self {
-            search_string: "".to_string(),
-            show_timestamps: false,
-            show_targets: false,
-            show_file_info: false,
-            show_span_info: false,
-            auto_scroll: true,
-            level_filter: Level::Trace,
-            wrap: false,
-        }
-    }
-}
-
-pub fn run_egui(frontend: FrontendSide, tokio_egui_bridge: TokioEguiBridge) -> Result<()> {
+pub fn run_egui(
+    to_backend: tokio::sync::mpsc::UnboundedSender<TopLevelFrontendEvent>,
+    tokio_egui_bridge: TokioEguiBridge,
+) -> Result<()> {
     eframe::run_native(
         "Tracing Log Viewer",
         eframe::NativeOptions::default(),
@@ -475,7 +452,12 @@ impl eframe::App for EguiApp {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
+pub enum WaitForStreamResponse {
+    StreamStarted { id: usize },
+}
+
+#[derive(Debug)]
 pub enum UiEvent {
     LogDisplaySettingsChanged(DisplaySettings),
     OpenInEditor { path: String, line: u32 },

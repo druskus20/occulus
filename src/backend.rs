@@ -1,7 +1,11 @@
+use crate::data::{BackendCommForStream, StreamData};
+use crate::frontend2::TopLevelFrontendEvent;
+use crate::prelude::*;
+
 use crate::async_rt::TokioEguiBridge;
 use crate::frontend::UiEvent;
-use crate::{BackendSide, prelude::*};
 use argus::tracing::oculus::DashboardEvent;
+use egui::ahash::HashMap;
 use egui::mutex::Mutex;
 use std::collections::VecDeque;
 use std::error::Error;
@@ -18,36 +22,131 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info};
 
+#[derive(Debug)]
+pub enum TopLevelBackendEvent {}
+
 /// Runs the backend-side tasks for handling TCP connections and data processing
-pub async fn run_backend(backend: BackendSide, tokio_egui_bridge: TokioEguiBridge) {
-    let cancel = tokio_egui_bridge.cancel_token();
-
-    // Communication between tasks
-    let (to_data_ctrl, from_tcp_ctrl) = unbounded_channel::<DataTaskCtrl>(); // ctrl
-    let (incoming_logs_tx, incoming_logs_rx) = LogAppendBuf::split(); // logs
-
-    // TCP TASK
-    let _tcp_task = TcpTask::new(cancel.clone(), to_data_ctrl, incoming_logs_tx).spawn();
-
-    // DATA TASK
+///
+/// Listen to events from the frontend to start new streams and stop existing ones.
+pub async fn run_backend(
+    mut from_frontend: UnboundedReceiver<TopLevelFrontendEvent>,
+    to_frontend: UnboundedSender<TopLevelBackendEvent>,
+    tokio_egui_bridge: TokioEguiBridge,
+) {
     // Wait for egui to be initialized
     let egui_ctx = tokio_egui_bridge.wait_egui_ctx().await;
-    let _data_precompute_task_handle = DataPrecomputeTask::new(
-        backend,
-        egui_ctx,
-        from_tcp_ctrl,
-        incoming_logs_rx,
-        cancel.clone(),
-    )
-    .spawn();
 
-    // Cancel
-    let cancel = tokio_egui_bridge.cancelled_fut();
-    tokio::select! {
-        _ = cancel => {
-            warn!("Tokio task cancelled, shutting down...");
-        },
+    let mut backend = Backend {
+        egui_ctx,
+        streams: HashMap::default(),
+        tokio_egui_bridge: tokio_egui_bridge.clone(),
+        last_stream_id: 0,
     };
+
+    loop {
+        // Cancel
+        tokio::select! {
+            _ = tokio_egui_bridge.cancelled_fut() => {
+                warn!("Tokio task cancelled, shutting down...");
+            },
+            event = from_frontend.recv() => {
+                match event {
+                    Some(event) => backend.handle_top_level_frontend_event(event).expect("Failed to handle frontend event"),
+                    None => {
+                        info!("Frontend event channel closed, shutting down backend");
+                        break;
+                    }
+                }
+            },
+        };
+    }
+}
+
+pub struct BakcendEvent {}
+/// Manages multiple streams
+struct Backend {
+    streams: HashMap<usize, Stream>,
+    egui_ctx: egui::Context,
+    tokio_egui_bridge: TokioEguiBridge,
+    last_stream_id: usize,
+}
+
+impl Backend {
+    async fn start_stream(&mut self) {
+        let stream_id = self.last_stream_id + 1;
+        let stream = Stream::start_new(stream_id, self.tokio_egui_bridge.clone())
+            .await
+            .expect("Failed to start new stream");
+        self.streams.insert(stream_id, stream);
+        info!("Started new stream with ID {}", stream_id);
+        self.last_stream_id += 1;
+    }
+
+    fn handle_top_level_frontend_event(&mut self, event: TopLevelFrontendEvent) -> Result<()> {
+        match event {
+            TopLevelFrontendEvent::OpenStream { on_pane_id } => todo!(),
+            TopLevelFrontendEvent::CloseStream { on_pane_id } => todo!(),
+        }
+    }
+}
+
+/// A single stream of logs, which consists in two tasks, a data task and a tcp task.
+struct Stream {
+    stream_id: usize,
+
+    /// Inactive streams have no TCP task running
+    active_tcp_task: Option<JoinHandle<Result<()>>>,
+    /// Data task is always active
+    data_task: JoinHandle<Result<()>>,
+
+    cancel: CancellationToken,
+}
+
+impl Stream {
+    async fn start_new(stream_id: usize, tokio_egui_bridge: TokioEguiBridge) -> Result<Self> {
+        let cancel = tokio_egui_bridge.cancel_token();
+        let egui_ctx = tokio_egui_bridge.wait_egui_ctx().await;
+
+        // Communication between tasks
+        let (incoming_logs_tx, incoming_logs_rx) = LogAppendBuf::split(); // logs
+        let (to_data_ctrl, from_tcp_ctrl) = unbounded_channel::<DataTaskCtrl>(); // ctrl
+
+        // TCP TASK
+        let tcp_task = TcpTask::new(cancel.clone(), to_data_ctrl, incoming_logs_tx).spawn();
+
+        let comm_with_frontend = todo!();
+
+        // DATA TASK
+        let data_task = DataTask::new(
+            comm_with_frontend,
+            egui_ctx,
+            from_tcp_ctrl,
+            incoming_logs_rx,
+            cancel.clone(),
+        )
+        .spawn();
+
+        Ok(Self {
+            stream_id,
+            active_tcp_task: Some(tcp_task),
+            data_task,
+            cancel,
+        })
+    }
+
+    fn is_active(&self) -> bool {
+        self.active_tcp_task.is_some()
+    }
+
+    fn stop_tcp(&mut self) {
+        if let Some(handle) = self.active_tcp_task.take() {
+            // TODO: do this grafecully
+            handle.abort();
+            debug!("TCP task for stream {} stopped", self.stream_id);
+        } else {
+            warn!("No active TCP task to stop for stream {}", self.stream_id);
+        }
+    }
 }
 
 pub struct LogAppendBuf<T> {
@@ -105,8 +204,10 @@ impl<T> LogAppendBufReader<T> {
 // tcp task -> async driven,  copies the logs into a shared buffer
 // data task -> periodically (timer)  copies the lgos from the tcp task into permanent storage,
 // and computes a set of logs with the filters applied. When the filters change, it recomputes the logs
-pub struct DataPrecomputeTask {
+pub struct DataTask {
     incoming_logs_buffer: LogAppendBufReader<Arc<DashboardEvent>>,
+
+    comms: BackendCommForStream,
 
     /// All logs, kept in memory for the lifetime of the task
     all_logs: LogCollection,
@@ -118,10 +219,7 @@ pub struct DataPrecomputeTask {
 
     ctrl_rx: UnboundedReceiver<DataTaskCtrl>,
 
-    backend_side: BackendSide,
     egui_ctx: egui::Context,
-
-    memory_tracker: MemoryTracker,
 
     #[allow(unused)]
     cancel: CancellationToken,
@@ -190,11 +288,16 @@ impl TcpTask {
 
         Ok(())
     }
+
+    fn cancel(&self) {
+        debug!("Cancelling TCP task");
+        self.cancel.cancel();
+    }
 }
 
-impl DataPrecomputeTask {
+impl DataTask {
     pub fn new(
-        backend: BackendSide,
+        comms: BackendCommForStream,
         egui_ctx: egui::Context,
         data_task_ctrl: UnboundedReceiver<DataTaskCtrl>,
         incoming_logs_buffer: LogAppendBufReader<Arc<DashboardEvent>>,
@@ -206,15 +309,13 @@ impl DataPrecomputeTask {
             incoming_logs_buffer,
             ctrl_rx: data_task_ctrl,
             egui_ctx,
-            backend_side: backend,
             cancel,
-            memory_tracker: MemoryTracker::default(),
+            comms,
         }
     }
 
     /// Starts running once a `DataTaskCtrl::Start` message is received. (by the TCP task)
-    /// Returns the BackendSide, which can be reused for another connection later on.
-    pub fn spawn(mut self) -> JoinHandle<std::result::Result<BackendSide, DataTaskError>> {
+    pub fn spawn(mut self) -> JoinHandle<Result<()>> {
         const TICK_INTERVAL_MS: u64 = 100;
         let mut timer = tokio::time::interval(Duration::from_millis(u64::MAX));
         let mut timer_enabled = true; // Start with timer enabled
@@ -237,19 +338,18 @@ impl DataPrecomputeTask {
                             }
                             None => {
                                 info!("DataTaskCtrl channel closed, exiting loop");
-                                return Ok(self.backend_side);
+                                return Ok(());
                             }
                         }
                     },
-                    r = self.backend_side.from_frontend.recv() => {
+                    r = self.comms.from_frontend.recv() => {
                         match r {
                             Some(event) => {
                                 trace!("Received UI event: {:?}", event);
                                 self.handle_ui_event(event).await;
                             }
                             None => {
-                                info!("UI event channel closed, exiting loop");
-                                return Ok(self.backend_side);
+                                return Ok(());
                             }
                         }
                     },
@@ -258,10 +358,7 @@ impl DataPrecomputeTask {
                             Ok(_) => trace!("Published new logs to EGUI context"),
                             Err(e) => {
                                 error!("Failed to publish new logs: {:?}", e);
-                                return Err(DataTaskError {
-                                    msg: format!("Failed to publish new logs: {e:?}"),
-                                    backend: self.backend_side,
-                                });
+                                return Err(eyre!("Failed to publish new logs: {e:?}"));
                             }
                         }
                     }
@@ -274,7 +371,7 @@ impl DataPrecomputeTask {
     #[tracing::instrument(skip_all)]
     pub async fn publish_new_logs(&mut self) -> Result<()> {
         trace!("Publishing new logs to EGUI context");
-        let log_display_settings = self.backend_side.settings.clone();
+        let log_display_settings = self.comms.settings.clone();
 
         // Process new logs from the tcp task
         // order here avoids unnecessary clone
@@ -289,10 +386,10 @@ impl DataPrecomputeTask {
             // Filter with the current log display settings
             .filter(|event| {
                 (event.level >= log_display_settings.level_filter.into())
-                    && if !self.backend_side.settings.search_string.is_empty() {
+                    && if !self.comms.settings.search_string.is_empty() {
                         contains_case_insensitive(
                             event.message.as_str(),
-                            self.backend_side.settings.search_string.as_str(),
+                            self.comms.settings.search_string.as_str(),
                         )
                     } else {
                         true
@@ -317,13 +414,11 @@ impl DataPrecomputeTask {
         self.filtered_logs.extend(filtered_new_logs);
 
         // All the logs - we cannot extend, becasue how triple_buffer is implemented
-        let oculus_memory_usage_mb = self.memory_tracker.calc_memory_usage_mb();
-        *self.backend_side.data_buffer_tx.input_buffer_mut() = DataToDisplay {
+        *self.comms.data_buffer_tx.input_buffer_mut() = StreamData {
             filtered_logs: self.filtered_logs.clone(),
             log_counts: LogCounts::from_logs(&self.all_logs),
-            oculus_memory_usage_mb,
         };
-        self.backend_side.data_buffer_tx.publish();
+        self.comms.data_buffer_tx.publish();
         self.egui_ctx.request_repaint();
 
         Ok(())
@@ -371,7 +466,7 @@ impl DataPrecomputeTask {
         match event {
             UiEvent::LogDisplaySettingsChanged(new_settings) => {
                 info!("Received new log display settings: {:?}", new_settings);
-                self.backend_side.settings = new_settings;
+                self.comms.settings = new_settings;
                 self.filter_and_refresh_egui_buf().await;
             }
             UiEvent::OpenInEditor { path, line } => {
@@ -388,18 +483,18 @@ impl DataPrecomputeTask {
                 self.all_logs.clear();
                 self.filtered_logs.clear();
                 // Reset the data buffer
-                self.backend_side
+                self.comms
                     .data_buffer_tx
                     .input_buffer_mut()
                     .filtered_logs
                     .clear();
-                self.backend_side
+                self.comms
                     .data_buffer_tx
                     .input_buffer_mut()
                     .log_counts
                     .reset();
 
-                self.backend_side.data_buffer_tx.publish();
+                self.comms.data_buffer_tx.publish();
                 self.egui_ctx.request_repaint();
             }
         }
@@ -409,15 +504,15 @@ impl DataPrecomputeTask {
         trace!("Refreshing EGUI buffer");
         let all_logs = &self.all_logs;
 
-        let log_count = LogCounts::from_logs(all_logs);
+        let log_counts = LogCounts::from_logs(all_logs);
         let filtered_logs = all_logs
             .iter()
             .filter(|event| {
-                (event.level >= self.backend_side.settings.level_filter.into())
-                    && if !self.backend_side.settings.search_string.is_empty() {
+                (event.level >= self.comms.settings.level_filter.into())
+                    && if !self.comms.settings.search_string.is_empty() {
                         contains_case_insensitive(
                             event.message.as_str(),
-                            self.backend_side.settings.search_string.as_str(),
+                            self.comms.settings.search_string.as_str(),
                         )
                     } else {
                         true
@@ -426,31 +521,13 @@ impl DataPrecomputeTask {
             .cloned()
             .collect::<VecDeque<_>>();
 
-        let oculus_memory_usage_mb = self.memory_tracker.calc_memory_usage_mb();
-        *self.backend_side.data_buffer_tx.input_buffer_mut() = DataToDisplay {
+        *self.comms.data_buffer_tx.input_buffer_mut() = StreamData {
             filtered_logs,
-            log_counts: log_count,
-            oculus_memory_usage_mb,
+            log_counts,
         };
         // Refresh the triple buffer to reflect the new settings
-        self.backend_side.data_buffer_tx.publish();
+        self.comms.data_buffer_tx.publish();
         self.egui_ctx.request_repaint();
-    }
-}
-
-#[derive(Debug)]
-pub struct DataTaskError {
-    msg: String,
-    /// Passes the ownerhip back in case of an error so that it can be reused for another
-    /// connection later on
-    #[allow(unused)]
-    backend: BackendSide,
-}
-
-impl Error for DataTaskError {}
-impl std::fmt::Display for DataTaskError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "DataTaskError: {}", self.msg)
     }
 }
 
