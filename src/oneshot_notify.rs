@@ -33,13 +33,13 @@ impl OneshotNotify {
     }
 
     pub async fn wait(&self) {
-        info!("Waiting for egui ctx");
         // if already notified once, return immediately
         if self.flag.load(std::sync::atomic::Ordering::Acquire) {
             return;
         }
+        info!("Waiting for notification");
         self.async_notify.notified().await;
-        info!("Egui ctx is available now");
+        info!("Notification received");
     }
 
     pub fn wait_blocking(&self) {
@@ -48,10 +48,12 @@ impl OneshotNotify {
             return;
         }
         // wait on the condition variable
+        info!("Waiting for notification");
         let (lock, cvar) = &self.sync_notify;
         let mut notified = lock.lock().unwrap();
         while !*notified {
             notified = cvar.wait(notified).unwrap();
         }
+        info!("Notification received");
     }
 }

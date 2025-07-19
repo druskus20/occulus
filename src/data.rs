@@ -1,12 +1,13 @@
 use std::{collections::VecDeque, sync::Arc};
 
 use argus::tracing::oculus::DashboardEvent;
+use egui_tiles::TileId;
 use tokio::sync::mpsc::unbounded_channel;
 use triple_buffer::triple_buffer;
 
 use crate::{
     backend::{BakcendEvent, LogCounts},
-    frontend2::UiEvent,
+    frontend::ScopedUIEvent,
 };
 
 // Frontend and backend communication
@@ -14,32 +15,40 @@ use crate::{
 // 2) it allos the GUI to send events to the tokio tasks (i.e. Settings changed, start/stop...)
 pub struct FrontendBackendComm;
 
+#[derive(Debug)]
 pub struct FrontendCommForStream {
     pub stream_id: usize,
+    pub pane_id: egui_tiles::TileId,
     pub data_buffer_rx: triple_buffer::Output<StreamData>,
-    pub to_backend: tokio::sync::mpsc::UnboundedSender<UiEvent>,
+    pub to_backend: tokio::sync::mpsc::UnboundedSender<ScopedUIEvent>,
     pub from_backend: tokio::sync::mpsc::UnboundedSender<BakcendEvent>,
     pub settings: DisplaySettings,
 }
 
+#[derive(Debug)]
 pub struct BackendCommForStream {
     pub stream_id: usize,
+    pub pane_id: egui_tiles::TileId,
     pub data_buffer_tx: triple_buffer::Input<StreamData>,
-    pub from_frontend: tokio::sync::mpsc::UnboundedReceiver<UiEvent>,
+    pub from_frontend: tokio::sync::mpsc::UnboundedReceiver<ScopedUIEvent>,
     pub to_frontend: tokio::sync::mpsc::UnboundedReceiver<BakcendEvent>,
     pub settings: DisplaySettings,
 }
 
 impl FrontendBackendComm {
-    fn for_stream(stream_id: usize) -> (FrontendCommForStream, BackendCommForStream) {
+    pub fn for_stream(
+        stream_id: usize,
+        pane_id: TileId,
+    ) -> (FrontendCommForStream, BackendCommForStream) {
         let (data_buffer_tx, data_buffer_rx) = triple_buffer(&StreamData::default());
-        let (to_backend, from_frontend) = unbounded_channel::<UiEvent>();
+        let (to_backend, from_frontend) = unbounded_channel::<ScopedUIEvent>();
         let (from_backend, to_frontend) = unbounded_channel::<BakcendEvent>();
         let settings = DisplaySettings::default();
 
         (
             FrontendCommForStream {
                 stream_id,
+                pane_id,
                 data_buffer_rx,
                 to_backend,
                 from_backend,
@@ -47,6 +56,7 @@ impl FrontendBackendComm {
             },
             BackendCommForStream {
                 stream_id,
+                pane_id,
                 data_buffer_tx,
                 from_frontend,
                 to_frontend,

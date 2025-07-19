@@ -9,6 +9,16 @@ pub struct Tabs {
     next_panel_id: AtomicUsize,
 }
 
+impl std::fmt::Debug for Tabs {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Tabs")
+            .field("tree", &"...")
+            .field("behavior", &"...")
+            .field("next_panel_id", &self.next_panel_id)
+            .finish()
+    }
+}
+
 impl Tabs {
     pub fn new() -> Self {
         pub fn create_tree() -> egui_tiles::Tree<Pane> {
@@ -34,7 +44,7 @@ impl Tabs {
         self.tree.ui(&mut self.behavior, ui);
         if let Some(parent) = self.behavior.add_child_to.take() {
             //self.add_new_pane_to(parent);
-            frame_state.add_panel_child_to = Some(parent);
+            frame_state.add_pane_child_to = Some(parent);
         }
     }
 

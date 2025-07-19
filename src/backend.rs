@@ -1,11 +1,12 @@
-use crate::data::{BackendCommForStream, StreamData};
-use crate::frontend2::{TopLevelFrontendEvent, UiEvent};
+use crate::data::{BackendCommForStream, FrontendBackendComm, FrontendCommForStream, StreamData};
+use crate::frontend::{ScopedUIEvent, TopLevelFrontendEvent};
 use crate::prelude::*;
 
 use crate::async_rt::TokioEguiBridge;
 use argus::tracing::oculus::DashboardEvent;
 use egui::ahash::HashMap;
 use egui::mutex::Mutex;
+use egui_tiles::TileId;
 use std::collections::VecDeque;
 use std::process::Command;
 use std::sync::Arc;
@@ -22,7 +23,7 @@ use tracing::{error, info};
 
 #[derive(Debug)]
 pub enum TopLevelBackendEvent {
-    StreamCreated,
+    NewStream(FrontendCommForStream),
 }
 
 /// Runs the backend-side tasks for handling TCP connections and data processing
@@ -52,7 +53,10 @@ pub async fn run_backend(
             },
             event = from_frontend.recv() => {
                 match event {
-                    Some(event) => backend.handle_top_level_frontend_event(event).expect("Failed to handle frontend event"),
+                    Some(event) => backend
+                        .handle_top_level_frontend_event(event)
+                        .await
+                        .expect("Failed to handle frontend event"),
                     None => {
                         info!("Frontend event channel closed, shutting down backend");
                         break;
@@ -70,33 +74,62 @@ struct Backend {
     egui_ctx: egui::Context,
     tokio_egui_bridge: TokioEguiBridge,
     last_stream_id: usize,
-
     to_frontend: UnboundedSender<TopLevelBackendEvent>,
 }
 
 impl Backend {
-    async fn start_stream(&mut self) {
+    async fn start_stream(&mut self, pane_id: TileId) {
         let stream_id = self.last_stream_id + 1;
-        let stream = Stream::start_new(stream_id, self.tokio_egui_bridge.clone())
-            .await
-            .expect("Failed to start new stream");
-        self.streams.insert(stream_id, stream);
-        info!("Started new stream with ID {}", stream_id);
         self.last_stream_id += 1;
+
+        info!("Starting new stream with ID {}", stream_id);
+
+        let (frontend_comm_side, backend_comm_side) =
+            FrontendBackendComm::for_stream(stream_id, pane_id);
+
+        let stream = Stream::start_new(
+            stream_id,
+            pane_id,
+            backend_comm_side,
+            self.tokio_egui_bridge.clone(),
+        )
+        .await
+        .expect("Failed to start new stream");
+        self.streams.insert(stream_id, stream);
+
+        self.to_frontend
+            .send(TopLevelBackendEvent::NewStream(frontend_comm_side))
+            .expect("Failed to send stream created event");
     }
 
-    fn handle_top_level_frontend_event(&mut self, event: TopLevelFrontendEvent) -> Result<()> {
+    async fn handle_top_level_frontend_event(
+        &mut self,
+        event: TopLevelFrontendEvent,
+    ) -> Result<()> {
         debug!("Handling top-level frontend event: {:?}", event);
         match event {
-            TopLevelFrontendEvent::OpenStream { on_pane_id } => todo!(),
-            TopLevelFrontendEvent::CloseStream { on_pane_id } => todo!(),
+            TopLevelFrontendEvent::OpenStream { on_pane_id } => {
+                self.start_stream(on_pane_id).await;
+            }
+            TopLevelFrontendEvent::CloseStream { on_pane_id } => self
+                .streams
+                .iter_mut()
+                .find(|(_, stream)| stream.pane_id == on_pane_id)
+                .map(|(_, stream)| {
+                    stream.stop_tcp();
+                    stream.cancel.cancel();
+                    info!("Stopping stream with ID {}", stream.stream_id);
+                })
+                .expect("Failed to find stream for pane ID"),
         }
+        Ok(())
     }
 }
 
 /// A single stream of logs, which consists in two tasks, a data task and a tcp task.
 struct Stream {
     stream_id: usize,
+    pane_id: TileId,
 
     /// Inactive streams have no TCP task running
     active_tcp_task: Option<JoinHandle<Result<()>>>,
@@ -107,7 +140,12 @@ struct Stream {
 }
 
 impl Stream {
-    async fn start_new(stream_id: usize, tokio_egui_bridge: TokioEguiBridge) -> Result<Self> {
+    async fn start_new(
+        stream_id: usize,
+        pane_id: TileId,
+        comm_with_frontend: BackendCommForStream,
+        tokio_egui_bridge: TokioEguiBridge,
+    ) -> Result<Self> {
         let cancel = tokio_egui_bridge.cancel_token();
         let egui_ctx = tokio_egui_bridge.wait_egui_ctx().await;
 
@@ -119,8 +157,6 @@ impl Stream {
 
         // TCP TASK
         let tcp_task = TcpTask::new(cancel.clone(), to_data_ctrl, incoming_logs_tx).spawn();
-
-        let comm_with_frontend = todo!();
 
         // DATA TASK
         let data_task = DataTask::new(
@@ -134,6 +170,7 @@ impl Stream {
 
         Ok(Self {
             stream_id,
+            pane_id,
             active_tcp_task: Some(tcp_task),
             data_task,
             cancel,
@@ -258,6 +295,7 @@ impl TcpTask {
 
     pub fn spawn(self) -> JoinHandle<Result<()>> {
         tokio::task::spawn(async move {
+            debug!("Starting TCP task");
             self.tcp_loop().await.wrap_err("TCP task failed")?;
             Ok(())
         })
@@ -265,22 +303,22 @@ impl TcpTask {
 
     async fn tcp_loop(&self) -> Result<()> {
         // accept tpc connections in loop - only one at a time
-        loop {
-            let listener = TcpListener::bind("127.0.0.1:8080").await?;
-            info!("Listening for incoming TCP connections on 127.0.0.1:8080");
+        let listener = TcpListener::bind("127.0.0.1:8080").await?;
+        info!("Listening for incoming TCP connections on 127.0.0.1:8080");
 
-            let (stream, addr) = listener.accept().await?;
-            info!("Accepted connection from {}", addr);
-            self.data_task_ctrl_tx.send(DataTaskCtrl::StartTimer)?;
+        let (stream, addr) = listener.accept().await?;
+        info!("Accepted connection from {}", addr);
+        self.data_task_ctrl_tx.send(DataTaskCtrl::StartTimer)?;
 
-            // Forward messages
-            self.handle_log_stream(stream)
-                .await
-                .wrap_err(format!("Connection handling failed {addr}"))?;
+        // Forward messages
+        self.handle_log_stream(stream)
+            .await
+            .wrap_err(format!("Connection handling failed {addr}"))?;
 
-            info!("Connection from {} closed, stopping data task", addr);
-            self.data_task_ctrl_tx.send(DataTaskCtrl::StopTimer)?;
-        }
+        info!("Connection from {} closed, stopping data task", addr);
+        self.data_task_ctrl_tx.send(DataTaskCtrl::StopTimer)?;
+
+        Ok(())
     }
 
     async fn handle_log_stream(&self, stream: TcpStream) -> Result<()> {
@@ -327,6 +365,7 @@ impl DataTask {
         let mut timer_enabled = true; // Start with timer enabled
 
         tokio::task::spawn(async move {
+            debug!("Starting DataTask");
             loop {
                 tokio::select! {
                     r = self.ctrl_rx.recv() => {
@@ -430,7 +469,7 @@ impl DataTask {
         Ok(())
     }
 
-    async fn handle_ui_event(&mut self, event: UiEvent) {
+    async fn handle_ui_event(&mut self, event: ScopedUIEvent) {
         fn open_in_nvim(file_path: &str, line: u32) {
             info!("Opening file {} at line {}", file_path, line);
             // Check that $EDITOR is set to nvim
@@ -470,12 +509,12 @@ impl DataTask {
         }
 
         match event {
-            UiEvent::LogDisplaySettingsChanged(new_settings) => {
+            ScopedUIEvent::LogDisplaySettingsChanged(new_settings) => {
                 info!("Received new log display settings: {:?}", new_settings);
                 self.comms.settings = new_settings;
                 self.filter_and_refresh_egui_buf().await;
             }
-            UiEvent::OpenInEditor { path, line } => {
+            ScopedUIEvent::OpenInEditor { path, line } => {
                 // verify that the file exists
                 let path = std::path::PathBuf::from(path);
                 if !path.exists() {
@@ -484,7 +523,7 @@ impl DataTask {
                 }
                 open_in_nvim(&path.to_string_lossy(), line);
             }
-            UiEvent::Clear => {
+            ScopedUIEvent::Clear => {
                 info!("Clearing all logs");
                 self.all_logs.clear();
                 self.filtered_logs.clear();

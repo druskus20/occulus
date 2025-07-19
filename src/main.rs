@@ -9,16 +9,14 @@ pub(crate) mod prelude {
 use self::prelude::*;
 use async_rt::TokioEguiBridge;
 use backend::TopLevelBackendEvent;
-use frontend2::TopLevelFrontendEvent;
+use frontend::TopLevelFrontendEvent;
 use tokio::sync::mpsc::unbounded_channel;
-use triple_buffer::triple_buffer;
 
 mod async_rt;
 mod backend;
 mod cli;
 mod data;
-//pub mod frontend;
-pub mod frontend2;
+pub mod frontend;
 mod oneshot_notify;
 
 fn main() -> Result<()> {
@@ -57,7 +55,7 @@ fn main() -> Result<()> {
     // EGUI - Main thread
     match args.command {
         cli::Command::Launch => {
-            frontend2::run_egui(to_backend, from_backend, tokio_egui_bridge.clone())?
+            frontend::run_egui(to_backend, from_backend, tokio_egui_bridge.clone())?
         }
     };
 
