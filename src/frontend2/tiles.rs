@@ -1,41 +1,67 @@
-pub struct TabbedLayout {
+use egui_tiles::{Tile, TileId, Tiles};
+use std::sync::atomic::AtomicUsize;
+
+use super::FrameState;
+
+pub struct Tabs {
     tree: egui_tiles::Tree<Pane>,
     behavior: TreeBehavior,
-
     next_panel_id: AtomicUsize,
 }
 
-impl TabbedLayout {
+impl Tabs {
     pub fn new() -> Self {
-        let tree = create_tree();
-        let behavior = TreeBehavior::default();
+        pub fn create_tree() -> egui_tiles::Tree<Pane> {
+            let mut tiles = egui_tiles::Tiles::default();
+
+            let base_pane = tiles.insert_pane(Pane { nr: 1 });
+            let base_tab = tiles.insert_tab_tile(vec![base_pane]);
+
+            // Make a top-level tab tile to hold all of them
+            let root = tiles.insert_tab_tile(vec![base_tab]);
+
+            egui_tiles::Tree::new("my_tree", root, tiles)
+        }
+
         Self {
-            tree,
-            behavior,
-            next_panel_id: AtomicUsize::new(0),
+            tree: create_tree(),
+            behavior: TreeBehavior::default(),
+            next_panel_id: AtomicUsize::new(2),
         }
     }
 
-    pub fn ui(&mut self, ui: &mut egui::Ui) {
+    pub fn ui(&mut self, ui: &mut egui::Ui, frame_state: &mut FrameState) {
         self.tree.ui(&mut self.behavior, ui);
         if let Some(parent) = self.behavior.add_child_to.take() {
-            let new_child = self.tree.tiles.insert_pane(Pane::with_nr(
-                self.next_panel_id
-                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed),
-            ));
-            if let Some(egui_tiles::Tile::Container(egui_tiles::Container::Tabs(tabs))) =
-                self.tree.tiles.get_mut(parent)
-            {
-                tabs.add_child(new_child);
-                tabs.set_active(new_child);
+            self.add_new_pane_to(parent);
+        }
+    }
+
+    pub fn add_new_pane_to(&mut self, parent: egui_tiles::TileId) {
+        let new_pane = Pane::with_nr(
+            self.next_panel_id
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+        );
+        let new_tile = self.tree.tiles.insert_pane(new_pane);
+        if let Some(egui_tiles::Tile::Container(egui_tiles::Container::Tabs(tabs))) =
+            self.tree.tiles.get_mut(parent)
+        {
+            tabs.add_child(new_tile);
+            tabs.set_active(new_tile);
+        }
+    }
+
+    pub fn get_pane_with_id(&self, tile_id: TileId) -> Option<&Pane> {
+        if let Some(tile) = self.tree.tiles.get(tile_id) {
+            match tile {
+                Tile::Pane(pane) => Some(pane),
+                Tile::Container(_) => None,
             }
+        } else {
+            None
         }
     }
 }
-
-use std::sync::atomic::AtomicUsize;
-
-use egui_tiles::{Tile, TileId, Tiles};
 
 pub(crate) struct TreeBehavior {
     simplification_options: egui_tiles::SimplificationOptions,
@@ -189,32 +215,7 @@ impl Pane {
         //} else {
         //    egui_tiles::UiResponse::None
         //}
+
         egui_tiles::UiResponse::None
     }
-}
-
-pub fn create_tree() -> egui_tiles::Tree<Pane> {
-    let mut next_view_nr = 0;
-    let mut gen_pane = || {
-        let pane = Pane { nr: next_view_nr };
-        next_view_nr += 1;
-        pane
-    };
-
-    let mut tiles = egui_tiles::Tiles::default();
-
-    // Create panes first
-    let pane1 = tiles.insert_pane(gen_pane());
-    let pane2 = tiles.insert_pane(gen_pane());
-    let pane4 = tiles.insert_pane(gen_pane());
-
-    // Wrap each group of panes in their own tab tile
-    let tab1 = tiles.insert_tab_tile(vec![pane1]);
-    let tab2 = tiles.insert_tab_tile(vec![pane2]);
-    let tab3 = tiles.insert_tab_tile(vec![pane4]);
-
-    // Make a top-level tab tile to hold all of them
-    let root = tiles.insert_tab_tile(vec![tab1, tab2, tab3]);
-
-    egui_tiles::Tree::new("my_tree", root, tiles)
 }

@@ -1,5 +1,5 @@
 use crate::{FrontendSide, TokioEguiBridge, prelude::*};
-use argus::tracing::oculus::{DashboardEvent, Level};
+use argus::tracing::oculus::DashboardEvent;
 use eframe::egui;
 use egui::{Button, text::LayoutJob};
 
@@ -27,12 +27,12 @@ pub struct DisplaySettings {
     pub show_file_info: bool,
     pub show_span_info: bool,
     pub auto_scroll: bool,
-    pub level_filter: LogLevelFilter,
+    pub level_filter: Level,
     pub wrap: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Copy)]
-pub enum LogLevelFilter {
+pub enum Level {
     Trace,
     Debug,
     Info,
@@ -40,14 +40,26 @@ pub enum LogLevelFilter {
     Error,
 }
 
-impl From<LogLevelFilter> for argus::tracing::oculus::Level {
-    fn from(val: LogLevelFilter) -> Self {
+impl From<argus::tracing::oculus::Level> for Level {
+    fn from(val: argus::tracing::oculus::Level) -> Self {
         match val {
-            LogLevelFilter::Trace => argus::tracing::oculus::Level::TRACE,
-            LogLevelFilter::Debug => argus::tracing::oculus::Level::DEBUG,
-            LogLevelFilter::Info => argus::tracing::oculus::Level::INFO,
-            LogLevelFilter::Warn => argus::tracing::oculus::Level::WARN,
-            LogLevelFilter::Error => argus::tracing::oculus::Level::ERROR,
+            argus::tracing::oculus::Level::TRACE => Level::Trace,
+            argus::tracing::oculus::Level::DEBUG => Level::Debug,
+            argus::tracing::oculus::Level::INFO => Level::Info,
+            argus::tracing::oculus::Level::WARN => Level::Warn,
+            argus::tracing::oculus::Level::ERROR => Level::Error,
+        }
+    }
+}
+
+impl From<Level> for argus::tracing::oculus::Level {
+    fn from(val: Level) -> Self {
+        match val {
+            Level::Trace => argus::tracing::oculus::Level::TRACE,
+            Level::Debug => argus::tracing::oculus::Level::DEBUG,
+            Level::Info => argus::tracing::oculus::Level::INFO,
+            Level::Warn => argus::tracing::oculus::Level::WARN,
+            Level::Error => argus::tracing::oculus::Level::ERROR,
         }
     }
 }
@@ -61,7 +73,7 @@ impl Default for DisplaySettings {
             show_file_info: false,
             show_span_info: false,
             auto_scroll: true,
-            level_filter: LogLevelFilter::Trace,
+            level_filter: Level::Trace,
             wrap: false,
         }
     }
@@ -79,14 +91,14 @@ pub fn run_egui(frontend: FrontendSide, tokio_egui_bridge: TokioEguiBridge) -> R
 
 fn color_for_log_level(level: &Level) -> Color32 {
     match level {
-        Level::TRACE => COLOR_TRACE,
-        Level::DEBUG => COLOR_DEBUG,
-        Level::INFO => COLOR_INFO,
-        Level::WARN => COLOR_WARNING,
-        Level::ERROR => COLOR_ERROR,
+        Level::Trace => COLOR_TRACE,
+        Level::Debug => COLOR_DEBUG,
+        Level::Info => COLOR_INFO,
+        Level::Warn => COLOR_WARNING,
+        Level::Error => COLOR_ERROR,
     }
 }
-impl std::hash::Hash for LogLevelFilter {
+impl std::hash::Hash for Level {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         std::mem::discriminant(self).hash(state);
     }
@@ -138,7 +150,7 @@ struct EguiApp {
 }
 
 impl EguiApp {
-    fn apply_filter(&mut self, new_filter: LogLevelFilter) -> bool {
+    fn apply_filter(&mut self, new_filter: Level) -> bool {
         if self.frontend_side.settings.level_filter != new_filter {
             self.frontend_side.settings.level_filter = new_filter;
             self.frontend_side
@@ -411,40 +423,40 @@ impl eframe::App for EguiApp {
                     "Error",
                     COLOR_ERROR,
                     log_counts.error,
-                    self.frontend_side.settings.level_filter == LogLevelFilter::Error,
-                    || self.apply_filter(LogLevelFilter::Error),
+                    self.frontend_side.settings.level_filter == Level::Error,
+                    || self.apply_filter(Level::Error),
                     ui,
                 );
                 add_colored_button(
                     "Warn",
                     COLOR_WARNING,
                     log_counts.warn,
-                    self.frontend_side.settings.level_filter == LogLevelFilter::Warn,
-                    || self.apply_filter(LogLevelFilter::Warn),
+                    self.frontend_side.settings.level_filter == Level::Warn,
+                    || self.apply_filter(Level::Warn),
                     ui,
                 );
                 add_colored_button(
                     "Info",
                     COLOR_INFO,
                     log_counts.info,
-                    self.frontend_side.settings.level_filter == LogLevelFilter::Info,
-                    || self.apply_filter(LogLevelFilter::Info),
+                    self.frontend_side.settings.level_filter == Level::Info,
+                    || self.apply_filter(Level::Info),
                     ui,
                 );
                 add_colored_button(
                     "Debug",
                     COLOR_DEBUG,
                     log_counts.debug,
-                    self.frontend_side.settings.level_filter == LogLevelFilter::Debug,
-                    || self.apply_filter(LogLevelFilter::Debug),
+                    self.frontend_side.settings.level_filter == Level::Debug,
+                    || self.apply_filter(Level::Debug),
                     ui,
                 );
                 add_colored_button(
                     "Trace",
                     COLOR_TRACE,
                     log_counts.trace,
-                    self.frontend_side.settings.level_filter == LogLevelFilter::Trace,
-                    || self.apply_filter(LogLevelFilter::Trace),
+                    self.frontend_side.settings.level_filter == Level::Trace,
+                    || self.apply_filter(Level::Trace),
                     ui,
                 );
             });
@@ -495,7 +507,7 @@ pub fn display_log_line_columns(
         let level_text = event.level.to_string().to_uppercase();
         ui.label(
             egui::RichText::new(level_text)
-                .color(color_for_log_level(&event.level))
+                .color(color_for_log_level(&event.level.into()))
                 .font(egui::FontId::monospace(12.0)),
         );
     });
