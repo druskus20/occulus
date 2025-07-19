@@ -1,14 +1,12 @@
 use crate::data::{BackendCommForStream, StreamData};
-use crate::frontend2::TopLevelFrontendEvent;
+use crate::frontend2::{TopLevelFrontendEvent, UiEvent};
 use crate::prelude::*;
 
 use crate::async_rt::TokioEguiBridge;
-use crate::frontend::UiEvent;
 use argus::tracing::oculus::DashboardEvent;
 use egui::ahash::HashMap;
 use egui::mutex::Mutex;
 use std::collections::VecDeque;
-use std::error::Error;
 use std::process::Command;
 use std::sync::Arc;
 use std::time::Duration;
@@ -23,7 +21,9 @@ use tokio_util::sync::CancellationToken;
 use tracing::{error, info};
 
 #[derive(Debug)]
-pub enum TopLevelBackendEvent {}
+pub enum TopLevelBackendEvent {
+    StreamCreated,
+}
 
 /// Runs the backend-side tasks for handling TCP connections and data processing
 ///
@@ -35,15 +35,16 @@ pub async fn run_backend(
 ) {
     // Wait for egui to be initialized
     let egui_ctx = tokio_egui_bridge.wait_egui_ctx().await;
-
     let mut backend = Backend {
         egui_ctx,
         streams: HashMap::default(),
         tokio_egui_bridge: tokio_egui_bridge.clone(),
         last_stream_id: 0,
+        to_frontend,
     };
 
     loop {
+        debug!("Backend event loop running");
         // Cancel
         tokio::select! {
             _ = tokio_egui_bridge.cancelled_fut() => {
@@ -69,6 +70,8 @@ struct Backend {
     egui_ctx: egui::Context,
     tokio_egui_bridge: TokioEguiBridge,
     last_stream_id: usize,
+
+    to_frontend: UnboundedSender<TopLevelBackendEvent>,
 }
 
 impl Backend {
@@ -83,6 +86,7 @@ impl Backend {
     }
 
     fn handle_top_level_frontend_event(&mut self, event: TopLevelFrontendEvent) -> Result<()> {
+        debug!("Handling top-level frontend event: {:?}", event);
         match event {
             TopLevelFrontendEvent::OpenStream { on_pane_id } => todo!(),
             TopLevelFrontendEvent::CloseStream { on_pane_id } => todo!(),
@@ -106,6 +110,8 @@ impl Stream {
     async fn start_new(stream_id: usize, tokio_egui_bridge: TokioEguiBridge) -> Result<Self> {
         let cancel = tokio_egui_bridge.cancel_token();
         let egui_ctx = tokio_egui_bridge.wait_egui_ctx().await;
+
+        debug!("Starting new stream with ID {}", stream_id);
 
         // Communication between tasks
         let (incoming_logs_tx, incoming_logs_rx) = LogAppendBuf::split(); // logs

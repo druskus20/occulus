@@ -1,6 +1,8 @@
+use egui_tiles::TileId;
 use tiles::Tabs;
+use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
-use crate::{TokioEguiBridge, backend::TopLevelBackendEvent, frontend::UiEvent, prelude::*};
+use crate::{TokioEguiBridge, backend::TopLevelBackendEvent, data::DisplaySettings, prelude::*};
 
 mod tiles;
 
@@ -20,14 +22,17 @@ pub(super) mod colors {
 }
 
 pub fn run_egui(
-    to_backend: tokio::sync::mpsc::UnboundedSender<TopLevelFrontendEvent>,
-    from_backend: tokio::sync::mpsc::UnboundedReceiver<TopLevelBackendEvent>,
+    to_backend: UnboundedSender<TopLevelFrontendEvent>,
+    from_backend: UnboundedReceiver<TopLevelBackendEvent>,
     tokio_egui_bridge: TokioEguiBridge,
 ) -> Result<()> {
     eframe::run_native(
         "Oculus",
         eframe::NativeOptions::default(),
         Box::new(|cc| {
+            let ctx = cc.egui_ctx.clone();
+            tokio_egui_bridge.register_egui_context(ctx);
+
             Ok(Box::new(EguiApp {
                 tokio_bridge: tokio_egui_bridge,
                 to_backend,
@@ -43,46 +48,58 @@ pub fn run_egui(
 struct EguiApp {
     tokio_bridge: TokioEguiBridge,
 
-    /// Shared data and channels for communication with the backend
-    to_backend: tokio::sync::mpsc::UnboundedSender<TopLevelFrontendEvent>,
-
-    from_backend: tokio::sync::mpsc::UnboundedReceiver<TopLevelBackendEvent>,
+    // top level event channels. The response is not assumed to be instant, both backend and
+    // frontend are allowed to take their time to respond
+    to_backend: UnboundedSender<TopLevelFrontendEvent>,
+    from_backend: UnboundedReceiver<TopLevelBackendEvent>,
 
     tabs: Tabs,
 }
+
 #[derive(Debug)]
 pub enum TopLevelFrontendEvent {
-    OpenStream { on_pane_id: usize },
-    CloseStream { on_pane_id: usize },
+    OpenStream { on_pane_id: TileId },
+    CloseStream { on_pane_id: TileId },
 }
 
 /// Controls different actions throught the rendering of one frame.
 /// This is used to bubble up UI interactions
+#[derive(Debug, Default)]
 pub struct FrameState {
-    add_child_to: Option<egui_tiles::TileId>,
+    add_panel_child_to: Option<egui_tiles::TileId>,
 }
 
 impl EguiApp {
     /// Acts on a framestate after the UI has been rendered.
     fn process_framestate(&mut self, frame_state: FrameState) {
-        if let Some(tile_id) = frame_state.add_child_to {
+        if let Some(tile_id) = frame_state.add_panel_child_to {
             self.tabs.add_new_pane_to(tile_id);
 
-            todo!()
-            // TODO
-            //self.frontend_side.to_backend.send(
-            //    BackendMessage::StartNewStream(tile_id),
-            //).expect("Failed to send AddNewPaneTo message to backend");
+            debug!("Adding new pane to tile: {:?}", tile_id);
+            self.to_backend
+                .send(TopLevelFrontendEvent::OpenStream {
+                    on_pane_id: tile_id,
+                })
+                .expect("Failed to send message to backend");
         }
     }
 }
 
 impl eframe::App for EguiApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        let mut frame_state = FrameState { add_child_to: None };
+        let mut frame_state = FrameState {
+            add_panel_child_to: None,
+        };
         egui::CentralPanel::default().show(ctx, |ui| {
             self.tabs.ui(ui, &mut frame_state);
         });
         self.process_framestate(frame_state);
     }
+}
+
+#[derive(Debug)]
+pub enum UiEvent {
+    LogDisplaySettingsChanged(DisplaySettings),
+    OpenInEditor { path: String, line: u32 },
+    Clear,
 }

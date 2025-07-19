@@ -6,7 +6,7 @@ use triple_buffer::triple_buffer;
 
 use crate::{
     backend::{BakcendEvent, LogCounts},
-    frontend::UiEvent,
+    frontend2::UiEvent,
 };
 
 // Frontend and backend communication
@@ -21,6 +21,7 @@ pub struct FrontendCommForStream {
     pub from_backend: tokio::sync::mpsc::UnboundedSender<BakcendEvent>,
     pub settings: DisplaySettings,
 }
+
 pub struct BackendCommForStream {
     pub stream_id: usize,
     pub data_buffer_tx: triple_buffer::Input<StreamData>,

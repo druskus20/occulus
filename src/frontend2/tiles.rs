@@ -33,7 +33,8 @@ impl Tabs {
     pub fn ui(&mut self, ui: &mut egui::Ui, frame_state: &mut FrameState) {
         self.tree.ui(&mut self.behavior, ui);
         if let Some(parent) = self.behavior.add_child_to.take() {
-            self.add_new_pane_to(parent);
+            //self.add_new_pane_to(parent);
+            frame_state.add_panel_child_to = Some(parent);
         }
     }
 
@@ -48,6 +49,8 @@ impl Tabs {
         {
             tabs.add_child(new_tile);
             tabs.set_active(new_tile);
+        } else {
+            panic!("Parent tile is not a tab container");
         }
     }
 

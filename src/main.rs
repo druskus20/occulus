@@ -17,7 +17,7 @@ mod async_rt;
 mod backend;
 mod cli;
 mod data;
-pub mod frontend;
+//pub mod frontend;
 pub mod frontend2;
 mod oneshot_notify;
 
@@ -25,6 +25,7 @@ fn main() -> Result<()> {
     // Init stuff
     color_eyre::install()?;
     let args = cli::ParsedArgs::parse_raw(); // cli args
+    dbg!(&args);
     quill::init(args.tracing_options.color); // color logging utilities
     let _guard = argus::tracing::setup_tracing(&args.tracing_options); // tracing
 
@@ -49,7 +50,6 @@ fn main() -> Result<()> {
     let tokio_thread_handle = {
         let tokio_egui_bridge = tokio_egui_bridge.clone(); // take ownership 
         async_rt::start(tokio_egui_bridge.clone(), async move {
-            // Register the Egui context with the bridge
             backend::run_backend(from_frontend, to_frontend, tokio_egui_bridge).await
         })
     };
