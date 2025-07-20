@@ -8,7 +8,7 @@ pub(crate) mod prelude {
 
 use self::prelude::*;
 use async_rt::TokioEguiBridge;
-use backend::TopLevelBackendEvent;
+use backend::{Backend, TopLevelBackendEvent};
 use frontend::TopLevelFrontendEvent;
 use tokio::sync::mpsc::unbounded_channel;
 
@@ -48,7 +48,10 @@ fn main() -> Result<()> {
     let tokio_thread_handle = {
         let tokio_egui_bridge = tokio_egui_bridge.clone(); // take ownership 
         async_rt::start(tokio_egui_bridge.clone(), async move {
-            backend::run_backend(from_frontend, to_frontend, tokio_egui_bridge).await
+            let egui_ctx = tokio_egui_bridge.wait_egui_ctx().await;
+            let mut backend =
+                Backend::init(egui_ctx, from_frontend, to_frontend, tokio_egui_bridge).await;
+            backend.run().await
         })
     };
 

@@ -7,7 +7,9 @@ use argus::tracing::oculus::DashboardEvent;
 use egui::ahash::HashMap;
 use egui::mutex::Mutex;
 use egui_tiles::TileId;
+use futures::StreamExt;
 use std::collections::VecDeque;
+use std::panic::catch_unwind;
 use std::process::Command;
 use std::sync::Arc;
 use std::time::Duration;
@@ -17,7 +19,7 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::net::TcpListener;
 use tokio::net::TcpStream;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
-use tokio::task::JoinHandle;
+use tokio::task::{JoinHandle, JoinSet};
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info};
 
@@ -26,59 +28,77 @@ pub enum TopLevelBackendEvent {
     NewStream(FrontendCommForStream),
 }
 
-/// Runs the backend-side tasks for handling TCP connections and data processing
-///
-/// Listen to events from the frontend to start new streams and stop existing ones.
-pub async fn run_backend(
-    mut from_frontend: UnboundedReceiver<TopLevelFrontendEvent>,
-    to_frontend: UnboundedSender<TopLevelBackendEvent>,
-    tokio_egui_bridge: TokioEguiBridge,
-) {
-    // Wait for egui to be initialized
-    let egui_ctx = tokio_egui_bridge.wait_egui_ctx().await;
-    let mut backend = Backend {
-        egui_ctx,
-        streams: HashMap::default(),
-        tokio_egui_bridge: tokio_egui_bridge.clone(),
-        last_stream_id: 0,
-        to_frontend,
-    };
-
-    loop {
-        debug!("Backend event loop running");
-        // Cancel
-        tokio::select! {
-            _ = tokio_egui_bridge.cancelled_fut() => {
-                warn!("Tokio task cancelled, shutting down...");
-            },
-            event = from_frontend.recv() => {
-                match event {
-                    Some(event) => backend
-                        .handle_top_level_frontend_event(event)
-                        .await
-                        .expect("Failed to handle frontend event"),
-                    None => {
-                        info!("Frontend event channel closed, shutting down backend");
-                        break;
-                    }
-                }
-            },
-        };
-    }
-}
-
 pub struct BakcendEvent {}
 /// Manages multiple streams
-struct Backend {
+pub struct Backend {
     streams: HashMap<usize, Stream>,
+    stream_task_set: JoinSet<Result<()>>,
+
     egui_ctx: egui::Context,
     tokio_egui_bridge: TokioEguiBridge,
     last_stream_id: usize,
     to_frontend: UnboundedSender<TopLevelBackendEvent>,
+    from_frontend: UnboundedReceiver<TopLevelFrontendEvent>,
 }
 
 impl Backend {
-    async fn start_stream(&mut self, pane_id: TileId) {
+    pub async fn init(
+        egui_ctx: egui::Context,
+        from_frontend: UnboundedReceiver<TopLevelFrontendEvent>,
+        to_frontend: UnboundedSender<TopLevelBackendEvent>,
+        tokio_egui_bridge: TokioEguiBridge,
+    ) -> Self {
+        Backend {
+            egui_ctx,
+            streams: HashMap::default(),
+            tokio_egui_bridge: tokio_egui_bridge.clone(),
+            last_stream_id: 0,
+            to_frontend,
+            from_frontend,
+            stream_task_set: JoinSet::new(),
+        }
+    }
+    pub async fn run(&mut self) {
+        loop {
+            debug!("Backend event loop running");
+
+            // print how many tasks are running
+            info!("Running {} stream tasks", self.stream_task_set.len());
+
+            tokio::select! {
+                Some(handle) = self.stream_task_set.join_next() => {
+                    match handle {
+                        Ok(Ok(())) => {
+                            info!("Stream task completed successfully");
+                        }
+                        Ok(Err(e)) => {
+                            error!("Stream task failed: {:?}", e);
+                        }
+                        Err(e) => {
+                            error!("Stream task panicked: {:?}", e);
+                        }
+                    }
+                },
+                _ = self.tokio_egui_bridge.cancelled_fut() => {
+                    warn!("Tokio task cancelled, shutting down...");
+                },
+                event = self.from_frontend.recv() => {
+                    match event {
+                        Some(event) => self
+                            .handle_top_level_frontend_event(event)
+                            .await
+                            .expect("Failed to handle frontend event"),
+                        None => {
+                            info!("Frontend event channel closed, shutting down backend");
+                            break;
+                        }
+                    }
+                },
+            };
+        }
+    }
+
+    async fn add_and_start_stream(&mut self, pane_id: TileId) {
         let stream_id = self.last_stream_id + 1;
         self.last_stream_id += 1;
 
@@ -91,6 +111,7 @@ impl Backend {
             stream_id,
             pane_id,
             backend_comm_side,
+            &mut self.stream_task_set,
             self.tokio_egui_bridge.clone(),
         )
         .await
@@ -109,15 +130,14 @@ impl Backend {
         debug!("Handling top-level frontend event: {:?}", event);
         match event {
             TopLevelFrontendEvent::OpenStream { on_pane_id } => {
-                self.start_stream(on_pane_id).await;
+                self.add_and_start_stream(on_pane_id).await;
             }
             TopLevelFrontendEvent::CloseStream { on_pane_id } => self
                 .streams
                 .iter_mut()
-                .find(|(_, stream)| stream.pane_id == on_pane_id)
-                .map(|(_, stream)| {
-                    stream.stop_tcp();
-                    stream.cancel.cancel();
+                .find(|(_id, stream)| stream.pane_id == on_pane_id)
+                .map(|(_id, stream)| {
+                    stream.cancel_all.cancel();
                     info!("Stopping stream with ID {}", stream.stream_id);
                 })
                 .expect("Failed to find stream for pane ID"),
@@ -131,12 +151,8 @@ struct Stream {
     stream_id: usize,
     pane_id: TileId,
 
-    /// Inactive streams have no TCP task running
-    active_tcp_task: Option<JoinHandle<Result<()>>>,
-    /// Data task is always active
-    data_task: JoinHandle<Result<()>>,
-
-    cancel: CancellationToken,
+    cancel_all: CancellationToken,
+    cancel_tcp: CancellationToken,
 }
 
 impl Stream {
@@ -144,9 +160,10 @@ impl Stream {
         stream_id: usize,
         pane_id: TileId,
         comm_with_frontend: BackendCommForStream,
+        stream_task_set: &mut JoinSet<Result<()>>,
         tokio_egui_bridge: TokioEguiBridge,
     ) -> Result<Self> {
-        let cancel = tokio_egui_bridge.cancel_token();
+        let cancel_all = tokio_egui_bridge.cancel_token();
         let egui_ctx = tokio_egui_bridge.wait_egui_ctx().await;
 
         debug!("Starting new stream with ID {}", stream_id);
@@ -156,38 +173,37 @@ impl Stream {
         let (to_data_ctrl, from_tcp_ctrl) = unbounded_channel::<DataTaskCtrl>(); // ctrl
 
         // TCP TASK
-        let tcp_task = TcpTask::new(cancel.clone(), to_data_ctrl, incoming_logs_tx).spawn();
+        let cancel_tcp = CancellationToken::new();
+        TcpTask::new(cancel_tcp.clone(), to_data_ctrl, incoming_logs_tx).spawn_on(stream_task_set);
 
         // DATA TASK
-        let data_task = DataTask::new(
+        DataTask::new(
             comm_with_frontend,
             egui_ctx,
             from_tcp_ctrl,
             incoming_logs_rx,
-            cancel.clone(),
+            cancel_all.clone(),
         )
-        .spawn();
+        .spawn_on(stream_task_set);
 
         Ok(Self {
             stream_id,
             pane_id,
-            active_tcp_task: Some(tcp_task),
-            data_task,
-            cancel,
+            cancel_all,
+            cancel_tcp,
         })
     }
 
-    fn is_active(&self) -> bool {
-        self.active_tcp_task.is_some()
+    fn is_receiving_tcp(&self) -> bool {
+        self.cancel_tcp.is_cancelled()
     }
 
-    fn stop_tcp(&mut self) {
-        if let Some(handle) = self.active_tcp_task.take() {
-            // TODO: do this grafecully
-            handle.abort();
-            debug!("TCP task for stream {} stopped", self.stream_id);
+    fn stop_receiving_tcp(&self) {
+        if !self.is_receiving_tcp() {
+            debug!("Stopping TCP task for stream {}", self.stream_id);
+            self.cancel_tcp.cancel();
         } else {
-            warn!("No active TCP task to stop for stream {}", self.stream_id);
+            warn!("TCP task for stream {} is already inactive", self.stream_id);
         }
     }
 }
@@ -293,12 +309,12 @@ impl TcpTask {
         }
     }
 
-    pub fn spawn(self) -> JoinHandle<Result<()>> {
-        tokio::task::spawn(async move {
+    pub fn spawn_on(self, task_set: &mut JoinSet<Result<()>>) {
+        task_set.spawn(async move {
             debug!("Starting TCP task");
             self.tcp_loop().await.wrap_err("TCP task failed")?;
             Ok(())
-        })
+        });
     }
 
     async fn tcp_loop(&self) -> Result<()> {
@@ -359,12 +375,12 @@ impl DataTask {
     }
 
     /// Starts running once a `DataTaskCtrl::Start` message is received. (by the TCP task)
-    pub fn spawn(mut self) -> JoinHandle<Result<()>> {
+    pub fn spawn_on(mut self, task_set: &mut JoinSet<Result<()>>) {
         const TICK_INTERVAL_MS: u64 = 100;
         let mut timer = tokio::time::interval(Duration::from_millis(u64::MAX));
         let mut timer_enabled = true; // Start with timer enabled
 
-        tokio::task::spawn(async move {
+        task_set.spawn(async move {
             debug!("Starting DataTask");
             loop {
                 tokio::select! {
@@ -409,7 +425,7 @@ impl DataTask {
                     }
                 };
             }
-        })
+        });
     }
 
     // publush new logs to the EGUI context
