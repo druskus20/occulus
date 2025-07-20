@@ -51,6 +51,11 @@ impl Tabs {
             //self.add_new_pane_to(parent);
             frame_state.add_pane_child_to = Some(parent);
         }
+
+        if let Some(tile_id) = self.behavior.close_tile.take() {
+            debug!("Pane has been closed: {:?}", tile_id);
+            frame_state.pane_has_been_closed = Some(tile_id);
+        }
     }
 
     pub fn add_new_pane_to(&mut self, parent: egui_tiles::TileId) -> TileId {
@@ -89,6 +94,7 @@ pub(crate) struct TreeBehavior {
     tab_bar_height: f32,
     gap_width: f32,
     add_child_to: Option<egui_tiles::TileId>,
+    close_tile: Option<egui_tiles::TileId>,
 }
 
 impl Default for TreeBehavior {
@@ -105,6 +111,7 @@ impl Default for TreeBehavior {
             tab_bar_height: 24.0,
             gap_width: 2.0,
             add_child_to: None,
+            close_tile: None,
         }
     }
 }
@@ -115,7 +122,8 @@ impl TreeBehavior {
             simplification_options,
             tab_bar_height,
             gap_width,
-            add_child_to: _,
+            add_child_to,
+            close_tile,
         } = self;
 
         egui::Grid::new("behavior_ui")
@@ -193,16 +201,18 @@ impl egui_tiles::Behavior<Pane> for TreeBehavior {
             match tile {
                 Tile::Pane(pane) => {
                     // Single pane removal
-                    let tab_title = self.tab_title_for_pane(pane);
+                    debug!("Removing tile: {:?}", tile_id);
+                    self.close_tile = Some(tile_id);
                 }
                 Tile::Container(container) => {
+                    unimplemented!("This is probably a bug");
                     // Container removal
-                    let children_ids = container.children();
-                    for child_id in children_ids {
-                        if let Some(Tile::Pane(pane)) = tiles.get(*child_id) {
-                            let tab_title = self.tab_title_for_pane(pane);
-                        }
-                    }
+                    //let children_ids = container.children();
+                    //for child_id in children_ids {
+                    //    if let Some(Tile::Pane(pane)) = tiles.get(*child_id) {
+                    //        let tab_title = self.tab_title_for_pane(pane);
+                    //    }
+                    //}
                 }
             }
         }

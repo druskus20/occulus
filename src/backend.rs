@@ -63,7 +63,11 @@ impl Backend {
             debug!("Backend event loop running");
 
             // print how many tasks are running
-            info!("Running {} stream tasks", self.stream_task_set.len());
+            info!(
+                "Running {} streams ({} stream tasks)",
+                self.streams.len(),
+                self.stream_task_set.len()
+            );
 
             tokio::select! {
                 Some(handle) = self.stream_task_set.join_next() => {
@@ -79,8 +83,9 @@ impl Backend {
                         }
                     }
                 },
-                _ = self.tokio_egui_bridge.cancelled_fut() => {
+               _ = self.tokio_egui_bridge.cancelled_fut() => {
                     warn!("Tokio task cancelled, shutting down...");
+                    break; // important!
                 },
                 event = self.from_frontend.recv() => {
                     match event {
