@@ -44,11 +44,17 @@ pub fn run_egui(
             let ctx = cc.egui_ctx.clone();
             tokio_egui_bridge.register_egui_context(ctx);
 
+            let mut tabs = Tabs::empty();
+            let tile_id = tabs.add_new_pane_to(tabs.root_tile());
+            to_backend.send(TopLevelFrontendEvent::OpenStream {
+                on_pane_id: tile_id,
+            })?;
+
             Ok(Box::new(EguiApp {
                 tokio_bridge: tokio_egui_bridge,
                 to_backend,
                 from_backend,
-                tabs: Tabs::new(),
+                tabs,
                 stream_comms: Vec::new(),
             }))
         }),
@@ -88,11 +94,11 @@ impl EguiApp {
     /// Acts on a framestate after the UI has been rendered.
     fn process_framestate(&mut self, frame_state: FrameState) -> Result<()> {
         if let Some(tile_id) = frame_state.add_pane_child_to {
-            self.tabs.add_new_pane_to(tile_id);
+            let new_tile_id = self.tabs.add_new_pane_to(tile_id);
 
-            debug!("Adding new pane to tile: {:?}", tile_id);
+            debug!("Adding new pane {:?} to tile: {:?}", new_tile_id, tile_id);
             self.to_backend.send(TopLevelFrontendEvent::OpenStream {
-                on_pane_id: tile_id,
+                on_pane_id: new_tile_id,
             })?;
         }
         if let Some(tile_id) = frame_state.pane_has_been_closed {

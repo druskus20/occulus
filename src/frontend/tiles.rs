@@ -1,10 +1,14 @@
 use egui_tiles::{Tile, TileId, Tiles};
 use std::sync::atomic::AtomicUsize;
 
+use crate::prelude::*;
+
 use super::FrameState;
 
 pub struct Tabs {
     tree: egui_tiles::Tree<Pane>,
+
+    root_tile_id: egui_tiles::TileId,
     behavior: TreeBehavior,
     next_panel_id: AtomicUsize,
 }
@@ -20,24 +24,25 @@ impl std::fmt::Debug for Tabs {
 }
 
 impl Tabs {
-    pub fn new() -> Self {
-        pub fn create_tree() -> egui_tiles::Tree<Pane> {
+    pub fn empty() -> Self {
+        let (tree, base_tile_id) = {
             let mut tiles = egui_tiles::Tiles::default();
 
-            let base_pane = tiles.insert_pane(Pane { nr: 1 });
-            let base_tab = tiles.insert_tab_tile(vec![base_pane]);
+            let root = tiles.insert_tab_tile(vec![]);
 
-            // Make a top-level tab tile to hold all of them
-            let root = tiles.insert_tab_tile(vec![base_tab]);
-
-            egui_tiles::Tree::new("my_tree", root, tiles)
-        }
+            (egui_tiles::Tree::new("my_tree", root, tiles), root)
+        };
 
         Self {
-            tree: create_tree(),
+            tree,
             behavior: TreeBehavior::default(),
             next_panel_id: AtomicUsize::new(2),
+            root_tile_id: base_tile_id,
         }
+    }
+
+    pub fn root_tile(&self) -> egui_tiles::TileId {
+        self.root_tile_id
     }
 
     pub fn ui(&mut self, ui: &mut egui::Ui, frame_state: &mut FrameState) {
@@ -48,7 +53,7 @@ impl Tabs {
         }
     }
 
-    pub fn add_new_pane_to(&mut self, parent: egui_tiles::TileId) {
+    pub fn add_new_pane_to(&mut self, parent: egui_tiles::TileId) -> TileId {
         let new_pane = Pane::with_nr(
             self.next_panel_id
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed),
@@ -57,11 +62,14 @@ impl Tabs {
         if let Some(egui_tiles::Tile::Container(egui_tiles::Container::Tabs(tabs))) =
             self.tree.tiles.get_mut(parent)
         {
+            info!("Adding new pane to parent tile: {:?}", parent);
             tabs.add_child(new_tile);
             tabs.set_active(new_tile);
         } else {
             panic!("Parent tile is not a tab container");
         }
+
+        return new_tile;
     }
 
     pub fn get_pane_with_id(&self, tile_id: TileId) -> Option<&Pane> {
