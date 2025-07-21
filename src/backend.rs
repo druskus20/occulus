@@ -9,6 +9,7 @@ use egui::mutex::Mutex;
 use egui_tiles::TileId;
 use futures::StreamExt;
 use std::collections::VecDeque;
+use std::error::Error;
 use std::panic::catch_unwind;
 use std::process::Command;
 use std::sync::Arc;
@@ -28,11 +29,30 @@ pub enum TopLevelBackendEvent {
     NewStream(FrontendCommForStream),
 }
 
+#[derive(Debug)]
+struct StreamError {
+    id: usize,
+    kind: StreamErrorKind,
+}
+
+#[derive(Debug)]
+enum StreamErrorKind {
+    TcpTaskFailed,
+    DataTaskFailed,
+}
+
+impl Error for StreamError {}
+impl std::fmt::Display for StreamError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "StreamError (ID: {}): {:?}", self.id, self.kind)
+    }
+}
+
 pub struct BakcendEvent {}
 /// Manages multiple streams
 pub struct Backend {
     streams: HashMap<usize, Stream>,
-    stream_task_set: JoinSet<Result<()>>,
+    stream_task_set: JoinSet<std::result::Result<(), StreamError>>,
 
     egui_ctx: egui::Context,
     tokio_egui_bridge: TokioEguiBridge,
@@ -76,7 +96,16 @@ impl Backend {
                             info!("Stream task completed successfully");
                         }
                         Ok(Err(e)) => {
-                            error!("Stream task failed: {:?}", e);
+                            let stream_id = e.id;
+                            error!("Stream task failed with error: {:?}", e);
+                            if let Some(stream) = self.streams.remove(&stream_id) {
+                                stream.terminate();
+                            }
+                            else {
+                                trace!("Stream with ID {} was not found in the streams map", stream_id);
+                                // Stream was already removed, this is fine since the error from
+                                // both data and tcp tasks could be the cause
+                            }
                         }
                         Err(e) => {
                             error!("Stream task panicked: {:?}", e);
@@ -174,7 +203,7 @@ impl Stream {
         stream_id: usize,
         pane_id: TileId,
         comm_with_frontend: BackendCommForStream,
-        stream_task_set: &mut JoinSet<Result<()>>,
+        stream_task_set: &mut JoinSet<std::result::Result<(), StreamError>>,
         tokio_egui_bridge: TokioEguiBridge,
     ) -> Result<Self> {
         let egui_ctx = tokio_egui_bridge.wait_egui_ctx().await;
@@ -187,7 +216,13 @@ impl Stream {
 
         // TCP TASK
         let cancel_tcp = CancellationToken::new();
-        TcpTask::new(cancel_tcp.clone(), to_data_ctrl, incoming_logs_tx).spawn_on(stream_task_set);
+        TcpTask::new(
+            stream_id,
+            cancel_tcp.clone(),
+            to_data_ctrl,
+            incoming_logs_tx,
+        )
+        .spawn_on(stream_task_set);
 
         // DATA TASK
         let cancel_data = CancellationToken::new();
@@ -309,6 +344,7 @@ pub struct DataTask {
 pub struct TcpTask {
     data_task_ctrl_tx: UnboundedSender<DataTaskCtrl>,
     incoming_logs_writer: LogAppendBufWriter<Arc<DashboardEvent>>,
+    stream_id: usize,
     #[allow(unused)]
     cancel: CancellationToken,
 }
@@ -320,6 +356,7 @@ pub enum DataTaskCtrl {
 
 impl TcpTask {
     pub fn new(
+        stream_id: usize,
         cancel: CancellationToken,
         data_task_ctrl_tx: UnboundedSender<DataTaskCtrl>,
         incoming_logs_writer: LogAppendBufWriter<Arc<DashboardEvent>>,
@@ -328,13 +365,20 @@ impl TcpTask {
             cancel,
             data_task_ctrl_tx,
             incoming_logs_writer,
+            stream_id,
         }
     }
 
-    pub fn spawn_on(self, task_set: &mut JoinSet<Result<()>>) {
+    pub fn spawn_on(mut self, task_set: &mut JoinSet<std::result::Result<(), StreamError>>) {
         task_set.spawn(async move {
             debug!("Starting TCP task");
-            self.tcp_loop().await.wrap_err("TCP task failed")?;
+            self.tcp_loop().await.map_err(|e| {
+                error!("TCP task failed: {:?}", e);
+                StreamError {
+                    id: self.stream_id,
+                    kind: StreamErrorKind::TcpTaskFailed,
+                }
+            })?;
             Ok(())
         });
     }
@@ -410,7 +454,7 @@ impl DataTask {
     }
 
     /// Starts running once a `DataTaskCtrl::Start` message is received. (by the TCP task)
-    pub fn spawn_on(mut self, task_set: &mut JoinSet<Result<()>>) {
+    pub fn spawn_on(mut self, task_set: &mut JoinSet<std::result::Result<(), StreamError>>) {
         const TICK_INTERVAL_MS: u64 = 100;
         let mut timer = tokio::time::interval(Duration::from_millis(u64::MAX));
         let mut timer_enabled = true; // Start with timer enabled
@@ -454,7 +498,10 @@ impl DataTask {
                             Ok(_) => trace!("Published new logs to EGUI context"),
                             Err(e) => {
                                 error!("Failed to publish new logs: {:?}", e);
-                                return Err(eyre!("Failed to publish new logs: {e:?}"));
+                                return Err(StreamError {
+                                    id: self.comms.stream_id,
+                                    kind: StreamErrorKind::DataTaskFailed,
+                                });
                             }
                         }
                     }
