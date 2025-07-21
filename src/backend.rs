@@ -63,7 +63,7 @@ impl Backend {
             debug!("Backend event loop running");
 
             // print how many tasks are running
-            info!(
+            debug!(
                 "Running {} streams ({} stream tasks)",
                 self.streams.len(),
                 self.stream_task_set.len()
@@ -101,6 +101,8 @@ impl Backend {
                 },
             };
         }
+
+        debug!("Backend event loop exited");
     }
 
     async fn add_and_start_stream(&mut self, pane_id: TileId) {
@@ -135,17 +137,22 @@ impl Backend {
         debug!("Handling top-level frontend event: {:?}", event);
         match event {
             TopLevelFrontendEvent::OpenStream { on_pane_id } => {
+                trace!("Opening stream for pane ID: {:?}", on_pane_id);
                 self.add_and_start_stream(on_pane_id).await;
             }
-            TopLevelFrontendEvent::CloseStream { on_pane_id } => self
-                .streams
-                .iter_mut()
-                .find(|(_id, stream)| stream.pane_id == on_pane_id)
-                .map(|(_id, stream)| {
-                    stream.cancel_all.cancel();
-                    info!("Stopping stream with ID {}", stream.stream_id);
-                })
-                .expect("Failed to find stream for pane ID"),
+            TopLevelFrontendEvent::CloseStream { on_pane_id } => {
+                trace!("Closing stream for pane ID: {:?}", on_pane_id);
+                let stream = self
+                    .streams
+                    .values()
+                    .find(|stream| stream.pane_id == on_pane_id)
+                    .expect("No stream found for the given pane ID");
+
+                let id = stream.stream_id;
+                info!("Stopping stream with ID {}", id);
+                stream.terminate();
+                self.streams.remove(&id);
+            }
         }
         Ok(())
     }
@@ -156,8 +163,10 @@ struct Stream {
     stream_id: usize,
     pane_id: TileId,
 
-    cancel_all: CancellationToken,
+    cancel_data: CancellationToken,
     cancel_tcp: CancellationToken,
+
+    tokio_egui_bridge: TokioEguiBridge,
 }
 
 impl Stream {
@@ -168,7 +177,6 @@ impl Stream {
         stream_task_set: &mut JoinSet<Result<()>>,
         tokio_egui_bridge: TokioEguiBridge,
     ) -> Result<Self> {
-        let cancel_all = tokio_egui_bridge.cancel_token();
         let egui_ctx = tokio_egui_bridge.wait_egui_ctx().await;
 
         debug!("Starting new stream with ID {}", stream_id);
@@ -182,20 +190,22 @@ impl Stream {
         TcpTask::new(cancel_tcp.clone(), to_data_ctrl, incoming_logs_tx).spawn_on(stream_task_set);
 
         // DATA TASK
+        let cancel_data = CancellationToken::new();
         DataTask::new(
             comm_with_frontend,
             egui_ctx,
             from_tcp_ctrl,
             incoming_logs_rx,
-            cancel_all.clone(),
+            cancel_data.clone(),
         )
         .spawn_on(stream_task_set);
 
         Ok(Self {
             stream_id,
             pane_id,
-            cancel_all,
+            cancel_data,
             cancel_tcp,
+            tokio_egui_bridge,
         })
     }
 
@@ -210,6 +220,13 @@ impl Stream {
         } else {
             warn!("TCP task for stream {} is already inactive", self.stream_id);
         }
+    }
+
+    #[tracing::instrument(skip_all)]
+    fn terminate(&self) {
+        trace!("Terminating stream {}", self.stream_id);
+        self.stop_receiving_tcp();
+        self.cancel_data.cancel();
     }
 }
 
@@ -346,11 +363,24 @@ impl TcpTask {
         let reader = BufReader::new(stream);
         let mut lines = reader.lines();
 
-        while let Ok(Some(line)) = lines.next_line().await {
-            let event = serde_json::from_str::<DashboardEvent>(&line)?;
-            self.incoming_logs_writer.push(Arc::new(event));
+        loop {
+            tokio::select! {
+                result = lines.next_line() => {
+                    match result {
+                        Ok(Some(line)) => {
+                            let event = serde_json::from_str::<DashboardEvent>(&line)?;
+                            self.incoming_logs_writer.push(Arc::new(event));
+                        }
+                        Ok(None) => break, // EOF
+                        Err(e) => return Err(e.into()),
+                    }
+                }
+                _ = self.cancel.cancelled() => {
+                    info!("Log stream cancelled.");
+                    break;
+                }
+            }
         }
-
         Ok(())
     }
 
