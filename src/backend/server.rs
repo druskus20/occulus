@@ -4,17 +4,21 @@ use crate::prelude::*;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::task::{JoinHandle, JoinSet};
+use tokio_util::sync::CancellationToken;
 
 pub struct TcpServer {
     address: String,
     tasks: JoinSet<Result<()>>,
+
+    cancel: CancellationToken,
 }
 
 impl TcpServer {
-    pub fn new(address: String) -> Self {
+    pub fn new(address: String, cancel: CancellationToken) -> Self {
         TcpServer {
             address,
             tasks: JoinSet::new(),
+            cancel,
         }
     }
 
@@ -54,6 +58,12 @@ impl TcpServer {
                                 error!("Task panicked: {:?}", e);
                             }
                         }
+                    }
+
+                    _ = self.cancel.cancelled() => {
+                        info!("Cancellation requested, shutting down TCP tasks");
+                        self.tasks.shutdown().await;
+                        info!("TCP server shutting down");
                     }
                 }
             }
