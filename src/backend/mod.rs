@@ -8,6 +8,7 @@ use egui::ahash::HashMap;
 use egui::mutex::Mutex;
 use egui_tiles::TileId;
 use futures::StreamExt;
+use server::{TcpHandlerTask, TcpServer};
 use std::collections::VecDeque;
 use std::error::Error;
 use std::panic::catch_unwind;
@@ -15,8 +16,9 @@ use std::process::Command;
 use std::sync::Arc;
 use std::time::Duration;
 use std::{env, mem};
+use stream::{Stream, StreamError};
 use sysinfo::System;
-use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpListener;
 use tokio::net::TcpStream;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
@@ -31,32 +33,14 @@ mod stream;
 pub enum TopLevelBackendEvent {
     NewStream(FrontendCommForStream),
 }
-
-#[derive(Debug)]
-struct StreamError {
-    id: usize,
-    kind: StreamErrorKind,
-}
-
-#[derive(Debug)]
-enum StreamErrorKind {
-    TcpTaskFailed,
-    DataTaskFailed,
-}
-
-impl Error for StreamError {}
-impl std::fmt::Display for StreamError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "StreamError (ID: {}): {:?}", self.id, self.kind)
-    }
-}
-
 pub struct BakcendEvent {}
+
 /// Manages multiple streams
 pub struct Backend {
     streams: HashMap<usize, Stream>,
     stream_task_set: JoinSet<std::result::Result<(), StreamError>>,
-
+    data_task_set: JoinSet<std::result::Result<(), StreamError>>,
+    tcp_task_set: JoinSet<std::result::Result<(), StreamError>>,
     egui_ctx: egui::Context,
     tokio_egui_bridge: TokioEguiBridge,
     last_stream_id: usize,
@@ -78,47 +62,99 @@ impl Backend {
             last_stream_id: 0,
             to_frontend,
             from_frontend,
-            stream_task_set: JoinSet::new(),
+            data_task_set: JoinSet::new(),
+            tcp_task_set: JoinSet::new(),
         }
     }
+    pub async fn move_to_ephemeral_port(&mut self, mut stream: TcpStream) -> Result<()> {
+        // Create ephemeral listener
+        let ephemeral_listener = TcpListener::bind("0.0.0.0:0").await?;
+        let ephemeral_port = ephemeral_listener.local_addr()?.port();
+
+        println!("Created ephemeral port: {}", ephemeral_port);
+
+        // Send ephemeral port to client
+        let msg = format!("PORT {}\n", ephemeral_port);
+        stream.write_all(msg.as_bytes()).await?;
+
+        let tcp_handler_cancel = CancellationToken::new();
+        let tcp_handler_task = TcpHandlerTask::new(stream, tcp_handler_cancel.clone());
+
+        // Spawn
+        tcp_handler_task.spawn_on(&mut self.tcp_task_set).await;
+
+        Ok(())
+    }
+
     pub async fn run(&mut self) {
+        let tcp_cancel = CancellationToken::new();
+
+        let address = "127.0.0.1:8080".to_string();
+        let listener = TcpListener::bind(&address)
+            .await
+            .expect("Failed to bind TCP listener");
+        info!("TCP server listening on {}", address);
+
         loop {
-            debug!("Backend event loop running");
-
-            // print how many tasks are running
-            debug!(
-                "Running {} streams ({} stream tasks)",
-                self.streams.len(),
-                self.stream_task_set.len()
-            );
-
             tokio::select! {
-                Some(handle) = self.stream_task_set.join_next() => {
-                    match handle {
-                        Ok(Ok(())) => {
-                            info!("Stream task completed successfully");
-                        }
-                        Ok(Err(e)) => {
-                            let stream_id = e.id;
-                            error!("Stream task failed with error: {:?}", e);
-                            if let Some(stream) = self.streams.remove(&stream_id) {
-                                stream.terminate();
-                            }
-                            else {
-                                trace!("Stream with ID {} was not found in the streams map", stream_id);
-                                // Stream was already removed, this is fine since the error from
-                                // both data and tcp tasks could be the cause
-                            }
+                r = listener.accept() => {
+                    info!("New TCP connection received");
+                    match r {
+                        Ok((tcp_stream, addr)) => {
+                            info!("Accepted connection from {}", addr);
+                            Stream::start_new(stream).await.spawn_on(self.data_task_set);
                         }
                         Err(e) => {
-                            error!("Stream task panicked: {:?}", e);
+                            error!("Failed to accept TCP connection: {:?}", e);
                         }
                     }
                 },
-               _ = self.tokio_egui_bridge.cancelled_fut() => {
-                    warn!("Tokio task cancelled, shutting down...");
-                    break; // important!
-                },
+                //Some(handle) = self.data_task_set.join_next() => {
+                //    match handle {
+                //        Ok(Ok(())) => {
+                //            info!("Stream task completed successfully");
+                //        }
+                //        Ok(Err(e)) => {
+                //            let stream_id = e.stream_id;
+                //            error!("Stream task failed with error: {:?}", e);
+                //            if let Some(stream) = self.streams.remove(&stream_id) {
+                //                stream.terminate();
+                //            }
+                //            else {
+                //                trace!("Stream with ID {} was not found in the streams map", stream_id);
+                //                // Stream was already removed, this is fine since the error from
+                //                // both data and tcp tasks could be the cause
+                //            }
+                //        }
+
+                //        Err(e) => {
+                //            error!("Stream task panicked: {:?}", e);
+                //        }
+                //    }
+                //},
+                //Some(handle) = self.tcp_task_set.join_next() => {
+                //    match handle {
+                //        Ok(Ok(())) => {
+                //            info!("TCP task completed successfully");
+                //        }
+                //        Ok(Err(e)) => {
+                //            let stream_id = e.stream_id;
+                //            error!("Stream task failed with error: {:?}", e);
+                //            if let Some(stream) = self.streams.remove(&stream_id) {
+                //                stream.terminate();
+                //            }
+                //            else {
+                //                trace!("Stream with ID {} was not found in the streams map", stream_id);
+                //                // Stream was already removed, this is fine since the error from
+                //                // both data and tcp tasks could be the cause
+                //            }
+                //        }
+
+                //        Err(e) => {
+                //            error!("Stream task panicked: {:?}", e);
+                //        }
+                //    }
+                //},
                 event = self.from_frontend.recv() => {
                     match event {
                         Some(event) => self
@@ -130,6 +166,10 @@ impl Backend {
                             break;
                         }
                     }
+                },
+               _ = self.tokio_egui_bridge.cancelled_fut() => {
+                    warn!("Tokio task cancelled, shutting down...");
+                    break; // important!
                 },
             };
         }
@@ -150,7 +190,7 @@ impl Backend {
             stream_id,
             pane_id,
             backend_comm_side,
-            &mut self.stream_task_set,
+            &mut self.data_task_set,
             self.tokio_egui_bridge.clone(),
         )
         .await
@@ -299,18 +339,20 @@ impl TcpTask {
         }
     }
 
-    pub fn spawn_on(self, task_set: &mut JoinSet<std::result::Result<(), StreamError>>) {
-        task_set.spawn(async move {
+    //pub fn spawn_on(self, task_set: &mut JoinSet<std::result::Result<(), StreamError>>) {
+    pub fn spawn(mut self) -> JoinHandle<std::result::Result<(), StreamError>> {
+        //task_set.spawn(async move {
+        tokio::task::spawn(async move {
             debug!("Starting TCP task");
             self.tcp_loop().await.map_err(|e| {
                 error!("TCP task failed: {:?}", e);
                 StreamError {
-                    id: self.stream_id,
-                    kind: StreamErrorKind::TcpTaskFailed,
+                    stream_id: self.stream_id,
+                    msg: format!("TCP task failed: {e}"),
                 }
             })?;
             Ok(())
-        });
+        })
     }
 
     async fn tcp_loop(&self) -> Result<()> {
@@ -384,12 +426,14 @@ impl DataTask {
     }
 
     /// Starts running once a `DataTaskCtrl::Start` message is received. (by the TCP task)
-    pub fn spawn_on(mut self, task_set: &mut JoinSet<std::result::Result<(), StreamError>>) {
+    //pub fn spawn_on(mut self, task_set: &mut JoinSet<std::result::Result<(), StreamError>>) {
+    pub fn spawn(mut self) -> JoinHandle<std::result::Result<(), StreamError>> {
         const TICK_INTERVAL_MS: u64 = 100;
         let mut timer = tokio::time::interval(Duration::from_millis(u64::MAX));
         let mut timer_enabled = true; // Start with timer enabled
 
-        task_set.spawn(async move {
+        tokio::task::spawn(async move {
+            //task_set.spawn(async move {
             debug!("Starting DataTask");
             loop {
                 tokio::select! {
@@ -437,7 +481,7 @@ impl DataTask {
                     }
                 };
             }
-        });
+        })
     }
 
     // publush new logs to the EGUI context
