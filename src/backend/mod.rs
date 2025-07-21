@@ -24,6 +24,9 @@ use tokio::task::{JoinHandle, JoinSet};
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info};
 
+mod server;
+mod stream;
+
 #[derive(Debug)]
 pub enum TopLevelBackendEvent {
     NewStream(FrontendCommForStream),
@@ -174,13 +177,18 @@ impl Backend {
                 let stream = self
                     .streams
                     .values()
-                    .find(|stream| stream.pane_id == on_pane_id)
-                    .expect("No stream found for the given pane ID");
+                    .find(|stream| stream.pane_id == on_pane_id);
 
-                let id = stream.stream_id;
-                info!("Stopping stream with ID {}", id);
-                stream.terminate();
-                self.streams.remove(&id);
+                if let Some(stream) = stream {
+                    let id = stream.stream_id;
+                    info!("Stopping stream with ID {}", id);
+                    stream.terminate();
+                    self.streams
+                        .remove(&id)
+                        .expect("Stream should be in the map");
+                } else {
+                    error!("No stream found for pane ID: {:?}", on_pane_id);
+                }
             }
         }
         Ok(())
