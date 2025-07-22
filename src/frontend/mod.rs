@@ -4,9 +4,9 @@ use crate::{
     data::{DisplaySettings, FrontendCommForStream},
     prelude::*,
 };
-use egui::{Vec2, vec2};
+use egui::{Vec2, ahash::HashMap, vec2};
 use egui_tiles::TileId;
-use tiles::Tabs;
+use tiles::{Pane, Tabs};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
 mod tiles;
@@ -45,10 +45,10 @@ pub fn run_egui(
             tokio_egui_bridge.register_egui_context(ctx);
 
             let mut tabs = Tabs::empty();
-            let tile_id = tabs.add_new_pane_to(tabs.root_tile());
-            to_backend.send(TopLevelFrontendEvent::OpenStream {
-                on_pane_id: tile_id,
-            })?;
+            //let tile_id = tabs.add_new_pane_to(tabs.root_tile());
+            //to_backend.send(TopLevelFrontendEvent::OpenStream {
+            //    on_pane_id: tile_id,
+            //})?;
 
             Ok(Box::new(EguiApp {
                 tokio_bridge: tokio_egui_bridge,
@@ -56,6 +56,7 @@ pub fn run_egui(
                 from_backend,
                 tabs,
                 stream_comms: Vec::new(),
+                streams: HashMap::default(),
             }))
         }),
     )
@@ -73,38 +74,63 @@ struct EguiApp {
     from_backend: UnboundedReceiver<TopLevelBackendEvent>,
 
     tabs: Tabs,
+
+    streams: HashMap<usize, StreamMeta>,
     stream_comms: Vec<FrontendCommForStream>,
+}
+
+#[derive(Debug, Clone)]
+struct StreamMeta {
+    pane_id: Option<TileId>,
+    stream_id: usize,
+    pending: bool,
 }
 
 #[derive(Debug)]
 pub enum TopLevelFrontendEvent {
-    OpenStream { on_pane_id: TileId },
-    CloseStream { on_pane_id: TileId },
+    OpenStream {
+        stream_id: usize,
+        on_pane_id: TileId,
+    },
+    CloseStream {
+        stream_id: usize,
+        on_pane_id: TileId,
+    },
 }
 
 /// Controls different actions throught the rendering of one frame.
 /// This is used to bubble up UI interactions
 #[derive(Debug, Default)]
 pub struct FrameState {
-    add_pane_child_to: Option<egui_tiles::TileId>,
+    open_pending_stream: Option<usize>,
     pane_has_been_closed: Option<egui_tiles::TileId>,
 }
 
 impl EguiApp {
     /// Acts on a framestate after the UI has been rendered.
     fn process_framestate(&mut self, frame_state: FrameState) -> Result<()> {
-        if let Some(tile_id) = frame_state.add_pane_child_to {
-            let new_tile_id = self.tabs.add_new_pane_to(tile_id);
+        if let Some(stream_id) = frame_state.open_pending_stream {
+            let new_tile_id = self.tabs.add_new_pane_to(self.tabs.root_tile(), stream_id);
 
-            debug!("Adding new pane {:?} to tile: {:?}", new_tile_id, tile_id);
+            debug!(
+                "Adding new pane {:?} to tile: {:?}",
+                new_tile_id,
+                self.tabs.root_tile()
+            );
+
             self.to_backend.send(TopLevelFrontendEvent::OpenStream {
                 on_pane_id: new_tile_id,
+                stream_id,
             })?;
         }
         if let Some(tile_id) = frame_state.pane_has_been_closed {
             debug!("Pane has been closed: {:?}", tile_id);
+
+            let stream_id = self.get_pane(tile_id).associated_stream_id;
+
             self.to_backend.send(TopLevelFrontendEvent::CloseStream {
                 on_pane_id: tile_id,
+                stream_id,
             })?;
         }
         Ok(())
@@ -113,12 +139,42 @@ impl EguiApp {
     fn receive_and_process_backend_events(&mut self) -> Result<()> {
         while let Ok(event) = self.from_backend.try_recv() {
             match event {
-                TopLevelBackendEvent::NewStream(comm) => {
+                TopLevelBackendEvent::NewPendingStream { stream_id, addr } => {
+                    info!(
+                        "New pending stream with ID {} at address {}",
+                        stream_id, addr
+                    );
+
+                    self.streams.insert(
+                        stream_id,
+                        StreamMeta {
+                            pane_id: None,
+                            stream_id,
+                            pending: true,
+                        },
+                    );
+                }
+                TopLevelBackendEvent::StreamStarted(comm) => {
+                    self.streams
+                        .get_mut(&comm.stream_id)
+                        .expect("Stream should be present")
+                        .pending = false;
+                    self.streams
+                        .get_mut(&comm.stream_id)
+                        .expect("Stream should be present")
+                        .pane_id = Some(comm.pane_id);
+
                     self.stream_comms.push(comm);
                 }
             }
         }
         Ok(())
+    }
+
+    fn get_pane(&self, tile_id: TileId) -> &Pane {
+        self.tabs
+            .get_pane_with_id(tile_id)
+            .expect("Pane should exist")
     }
 }
 

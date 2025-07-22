@@ -17,8 +17,8 @@ use super::LogAppendBufReader;
 
 #[derive(Debug)]
 pub struct StreamError {
-    stream_id: usize,
-    kind: StreamErrorKind,
+    pub stream_id: usize,
+    pub kind: StreamErrorKind,
 }
 
 #[derive(Debug)]
@@ -37,19 +37,18 @@ impl std::fmt::Display for StreamError {
 /// A single stream of logs, which consists in two tasks, a data task and a tcp task.
 pub struct Stream {
     stream_id: usize,
+    tcp_stream: tokio::net::TcpStream,
     pane_id: TileId,
-
     done_tcp: bool,
 
     cancel_data: CancellationToken,
     cancel_tcp: CancellationToken,
-
-    //tcp_task: Option<tokio::task::JoinHandle<std::result::Result<(), StreamError>>>,
-    //data_task: tokio::task::JoinHandle<std::result::Result<(), StreamError>>,
     tokio_egui_bridge: TokioEguiBridge,
+
+    comm_with_frontend: BackendCommForStream,
 }
 
-struct StreamHandle {
+pub struct StreamHandle {
     stream_id: usize,
     pane_id: TileId,
     cancel_data: CancellationToken,
@@ -58,50 +57,51 @@ struct StreamHandle {
     tcp_task: Option<tokio::task::JoinHandle<std::result::Result<(), StreamError>>>,
     data_task: tokio::task::JoinHandle<std::result::Result<(), StreamError>>,
 }
+
+impl StreamHandle {
+    #[tracing::instrument(skip_all)]
+    pub fn terminate(&self) {
+        trace!("Terminating stream {}", self.stream_id);
+        self.cancel_tcp.cancel();
+        self.cancel_data.cancel();
+    }
+}
 impl Stream {
     pub fn new(
         stream_id: usize,
+        tcp_stream: tokio::net::TcpStream,
         pane_id: TileId,
         comm_with_frontend: BackendCommForStream,
-        stream_task_set: &mut JoinSet<std::result::Result<(), StreamError>>,
-        incoming_logs_rx: LogAppendBufReader<Arc<DashboardEvent>>,
-        data_task_ctrl: tokio::sync::mpsc::UnboundedReceiver<DataTaskCtrl>,
         tokio_egui_bridge: TokioEguiBridge,
     ) -> Self {
         Self {
             stream_id,
+            tcp_stream,
             pane_id,
             done_tcp: false,
             cancel_data: CancellationToken::new(),
             cancel_tcp: CancellationToken::new(),
             tokio_egui_bridge,
+            comm_with_frontend,
         }
     }
 
-    pub async fn run(
-        &mut self,
-        stream_id: usize,
-        pane_id: TileId,
-        comm_with_frontend: BackendCommForStream,
-        stream_task_set: &mut JoinSet<std::result::Result<(), StreamError>>,
-        incoming_logs_rx: LogAppendBufReader<Arc<DashboardEvent>>,
-        data_task_ctrl: tokio::sync::mpsc::UnboundedReceiver<DataTaskCtrl>,
-        tokio_egui_bridge: TokioEguiBridge,
-    ) -> std::result::Result<(), StreamError> {
-        let egui_ctx = tokio_egui_bridge.wait_egui_ctx().await;
+    pub async fn run(mut self) -> std::result::Result<(), StreamError> {
+        let egui_ctx = self.tokio_egui_bridge.wait_egui_ctx().await;
 
-        debug!("Starting new stream with ID {}", stream_id);
+        debug!("Starting new stream with ID {}", self.stream_id);
 
         // Communication between tasks
         let (incoming_logs_tx, incoming_logs_rx) = LogAppendBuf::split(); // logs
-        let (to_data_ctrl, from_tcp_ctrl) = unbounded_channel::<DataTaskCtrl>(); // ctrl
+        //let (to_data_ctrl, from_tcp_ctrl) = unbounded_channel::<DataTaskCtrl>(); // ctrl // TODO:
+        // this probably goes away
 
         // TCP TASK
         let cancel_tcp = CancellationToken::new();
         let tcp_task = TcpTask::new(
-            stream_id,
+            self.stream_id,
+            self.tcp_stream,
             cancel_tcp.clone(),
-            to_data_ctrl,
             incoming_logs_tx,
         )
         .spawn()
@@ -110,9 +110,9 @@ impl Stream {
         // DATA TASK
         let cancel_data = CancellationToken::new();
         let data_task = DataTask::new(
-            comm_with_frontend,
+            self.comm_with_frontend,
             egui_ctx,
-            data_task_ctrl,
+            //self.data_task_ctrl,
             incoming_logs_rx,
             cancel_data.clone(),
         )
@@ -154,12 +154,5 @@ impl Stream {
             }
         }
         Ok(())
-    }
-
-    #[tracing::instrument(skip_all)]
-    pub fn terminate(&self) {
-        trace!("Terminating stream {}", self.stream_id);
-        self.cancel_tcp.cancel();
-        self.cancel_data.cancel();
     }
 }

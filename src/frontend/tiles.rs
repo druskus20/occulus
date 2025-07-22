@@ -47,10 +47,10 @@ impl Tabs {
 
     pub fn ui(&mut self, ui: &mut egui::Ui, frame_state: &mut FrameState) {
         self.tree.ui(&mut self.behavior, ui);
-        if let Some(parent) = self.behavior.add_child_to.take() {
-            //self.add_new_pane_to(parent);
-            frame_state.add_pane_child_to = Some(parent);
-        }
+        //if let Some(parent) = self.behavior.add_child_to.take() {
+        //    //self.add_new_pane_to(parent);
+        //    frame_state.add_pane_child_to = Some(parent);
+        //}
 
         if let Some(tile_id) = self.behavior.close_tile.take() {
             debug!("Pane has been closed: {:?}", tile_id);
@@ -58,10 +58,11 @@ impl Tabs {
         }
     }
 
-    pub fn add_new_pane_to(&mut self, parent: egui_tiles::TileId) -> TileId {
-        let new_pane = Pane::with_nr(
+    pub fn add_new_pane_to(&mut self, parent: egui_tiles::TileId, stream_id: usize) -> TileId {
+        let new_pane = Pane::new(
             self.next_panel_id
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+            stream_id,
         );
         let new_tile = self.tree.tiles.insert_pane(new_pane);
         if let Some(egui_tiles::Tile::Container(egui_tiles::Container::Tabs(tabs))) =
@@ -93,7 +94,7 @@ pub(crate) struct TreeBehavior {
     simplification_options: egui_tiles::SimplificationOptions,
     tab_bar_height: f32,
     gap_width: f32,
-    add_child_to: Option<egui_tiles::TileId>,
+    //add_child_to: Option<egui_tiles::TileId>,
     close_tile: Option<egui_tiles::TileId>,
 }
 
@@ -110,7 +111,7 @@ impl Default for TreeBehavior {
             },
             tab_bar_height: 24.0,
             gap_width: 2.0,
-            add_child_to: None,
+            //add_child_to: None,
             close_tile: None,
         }
     }
@@ -122,7 +123,7 @@ impl TreeBehavior {
             simplification_options,
             tab_bar_height,
             gap_width,
-            add_child_to,
+            //add_child_to,
             close_tile,
         } = self;
 
@@ -174,9 +175,9 @@ impl egui_tiles::Behavior<Pane> for TreeBehavior {
     ) {
         // Direction is reversed, right to left
         ui.add_space(4.0);
-        if ui.button("+").clicked() {
-            self.add_child_to = Some(tile_id);
-        }
+        //if ui.button("+").clicked() {
+        //    self.add_child_to = Some(tile_id);
+        //}
     }
 
     fn tab_bar_height(&self, _style: &egui::Style) -> f32 {
@@ -223,17 +224,21 @@ impl egui_tiles::Behavior<Pane> for TreeBehavior {
 }
 
 pub struct Pane {
-    nr: usize,
+    pub nr: usize,
+    pub associated_stream_id: usize,
 }
 
 impl Pane {
-    pub fn with_nr(nr: usize) -> Self {
-        Self { nr }
+    pub fn new(nr: usize, stream_id: usize) -> Self {
+        Self {
+            nr,
+            associated_stream_id: stream_id,
+        }
     }
 
     pub fn ui(&self, ui: &mut egui::Ui) -> egui_tiles::UiResponse {
-        todo!()
-        log_viewer.ui()
+        //todo!();
+        //log_viewer.ui()
         let color = egui::epaint::Hsva::new(0.103 * self.nr as f32, 0.5, 0.5, 1.0);
         ui.painter().rect_filled(ui.max_rect(), 0.0, color);
 

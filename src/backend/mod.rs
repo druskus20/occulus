@@ -8,7 +8,6 @@ use egui::ahash::HashMap;
 use egui::mutex::Mutex;
 use egui_tiles::TileId;
 use futures::StreamExt;
-use server::{TcpHandlerTask, TcpServer};
 use std::collections::VecDeque;
 use std::error::Error;
 use std::panic::catch_unwind;
@@ -16,7 +15,7 @@ use std::process::Command;
 use std::sync::Arc;
 use std::time::Duration;
 use std::{env, mem};
-use stream::{Stream, StreamError};
+use stream::{Stream, StreamError, StreamErrorKind, StreamHandle};
 use sysinfo::System;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpListener;
@@ -26,21 +25,24 @@ use tokio::task::{JoinHandle, JoinSet};
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info};
 
-mod server;
 mod stream;
 
 #[derive(Debug)]
 pub enum TopLevelBackendEvent {
-    NewStream(FrontendCommForStream),
+    NewPendingStream {
+        stream_id: usize,
+        addr: std::net::SocketAddr,
+    },
+    StreamStarted(FrontendCommForStream),
 }
 pub struct BakcendEvent {}
 
 /// Manages multiple streams
 pub struct Backend {
-    streams: HashMap<usize, Stream>,
+    pending_streams: HashMap<usize, TcpStream>,
+    streams: HashMap<usize, StreamHandle>,
+
     stream_task_set: JoinSet<std::result::Result<(), StreamError>>,
-    data_task_set: JoinSet<std::result::Result<(), StreamError>>,
-    tcp_task_set: JoinSet<std::result::Result<(), StreamError>>,
     egui_ctx: egui::Context,
     tokio_egui_bridge: TokioEguiBridge,
     last_stream_id: usize,
@@ -62,11 +64,11 @@ impl Backend {
             last_stream_id: 0,
             to_frontend,
             from_frontend,
-            data_task_set: JoinSet::new(),
-            tcp_task_set: JoinSet::new(),
+            pending_streams: HashMap::default(),
+            stream_task_set: JoinSet::new(),
         }
     }
-    pub async fn move_to_ephemeral_port(&mut self, mut stream: TcpStream) -> Result<()> {
+    pub async fn move_to_ephemeral_port(&mut self, mut stream: TcpStream) -> Result<TcpStream> {
         // Create ephemeral listener
         let ephemeral_listener = TcpListener::bind("0.0.0.0:0").await?;
         let ephemeral_port = ephemeral_listener.local_addr()?.port();
@@ -77,18 +79,10 @@ impl Backend {
         let msg = format!("PORT {}\n", ephemeral_port);
         stream.write_all(msg.as_bytes()).await?;
 
-        let tcp_handler_cancel = CancellationToken::new();
-        let tcp_handler_task = TcpHandlerTask::new(stream, tcp_handler_cancel.clone());
-
-        // Spawn
-        tcp_handler_task.spawn_on(&mut self.tcp_task_set).await;
-
-        Ok(())
+        Ok(stream)
     }
 
     pub async fn run(&mut self) {
-        let tcp_cancel = CancellationToken::new();
-
         let address = "127.0.0.1:8080".to_string();
         let listener = TcpListener::bind(&address)
             .await
@@ -98,63 +92,43 @@ impl Backend {
         loop {
             tokio::select! {
                 r = listener.accept() => {
-                    info!("New TCP connection received");
                     match r {
                         Ok((tcp_stream, addr)) => {
                             info!("Accepted connection from {}", addr);
-                            Stream::start_new(stream).await.spawn_on(self.data_task_set);
+                            let tcp_stream = self.move_to_ephemeral_port(tcp_stream).await.expect("Failed to move to ephemeral port");
+                            self.last_stream_id += 1;
+                            let stream_id = self.last_stream_id;
+                            self.pending_streams.insert(stream_id, tcp_stream);
+                            self.to_frontend.send(TopLevelBackendEvent::NewPendingStream{ stream_id: stream_id, addr });
                         }
                         Err(e) => {
                             error!("Failed to accept TCP connection: {:?}", e);
                         }
                     }
                 },
-                //Some(handle) = self.data_task_set.join_next() => {
-                //    match handle {
-                //        Ok(Ok(())) => {
-                //            info!("Stream task completed successfully");
-                //        }
-                //        Ok(Err(e)) => {
-                //            let stream_id = e.stream_id;
-                //            error!("Stream task failed with error: {:?}", e);
-                //            if let Some(stream) = self.streams.remove(&stream_id) {
-                //                stream.terminate();
-                //            }
-                //            else {
-                //                trace!("Stream with ID {} was not found in the streams map", stream_id);
-                //                // Stream was already removed, this is fine since the error from
-                //                // both data and tcp tasks could be the cause
-                //            }
-                //        }
+                Some(join_handle) = self.stream_task_set.join_next() => {
+                    match join_handle {
+                        Ok(Ok(())) => {
+                            info!("Stream task completed successfully");
+                        }
+                        Ok(Err(e)) => {
+                            let stream_id = e.stream_id;
+                            error!("Stream task failed with error: {:?}", e);
+                            if let Some(stream_handle) = self.streams.remove(&stream_id) {
+                                stream_handle.terminate();
+                            }
+                            else {
+                                trace!("Stream with ID {} was not found in the streams map", stream_id);
+                                // Stream was already removed, this is fine since the error from
+                                // both data and tcp tasks could be the cause
+                            }
+                        }
 
-                //        Err(e) => {
-                //            error!("Stream task panicked: {:?}", e);
-                //        }
-                //    }
-                //},
-                //Some(handle) = self.tcp_task_set.join_next() => {
-                //    match handle {
-                //        Ok(Ok(())) => {
-                //            info!("TCP task completed successfully");
-                //        }
-                //        Ok(Err(e)) => {
-                //            let stream_id = e.stream_id;
-                //            error!("Stream task failed with error: {:?}", e);
-                //            if let Some(stream) = self.streams.remove(&stream_id) {
-                //                stream.terminate();
-                //            }
-                //            else {
-                //                trace!("Stream with ID {} was not found in the streams map", stream_id);
-                //                // Stream was already removed, this is fine since the error from
-                //                // both data and tcp tasks could be the cause
-                //            }
-                //        }
-
-                //        Err(e) => {
-                //            error!("Stream task panicked: {:?}", e);
-                //        }
-                //    }
-                //},
+                        Err(e) => {
+                            error!("Stream task panicked: {:?}", e);
+                        }
+                    }
+                },
                 event = self.from_frontend.recv() => {
                     match event {
                         Some(event) => self
@@ -177,58 +151,54 @@ impl Backend {
         debug!("Backend event loop exited");
     }
 
-    async fn add_and_start_stream(&mut self, pane_id: TileId) {
-        let stream_id = self.last_stream_id + 1;
-        self.last_stream_id += 1;
-
-        info!("Starting new stream with ID {}", stream_id);
-
-        let (frontend_comm_side, backend_comm_side) =
-            FrontendBackendComm::for_stream(stream_id, pane_id);
-
-        let stream = Stream::start_new(
-            stream_id,
-            pane_id,
-            backend_comm_side,
-            &mut self.data_task_set,
-            self.tokio_egui_bridge.clone(),
-        )
-        .await
-        .expect("Failed to start new stream");
-        self.streams.insert(stream_id, stream);
-
-        self.to_frontend
-            .send(TopLevelBackendEvent::NewStream(frontend_comm_side))
-            .expect("Failed to send stream created event");
-    }
-
     async fn handle_top_level_frontend_event(
         &mut self,
         event: TopLevelFrontendEvent,
     ) -> Result<()> {
         debug!("Handling top-level frontend event: {:?}", event);
         match event {
-            TopLevelFrontendEvent::OpenStream { on_pane_id } => {
+            TopLevelFrontendEvent::OpenStream {
+                stream_id,
+                on_pane_id,
+            } => {
                 trace!("Opening stream for pane ID: {:?}", on_pane_id);
-                self.add_and_start_stream(on_pane_id).await;
+                let tcp_stream = self
+                    .pending_streams
+                    .remove(&stream_id)
+                    .expect("No pending stream found for pane ID");
+
+                // TODO
+                //let (stream_ctrl_tx, stream_ctrl_rx) = unbounded_channel::<StreamCtrl>();
+                let (frontend_comm_side, backend_comm_side) =
+                    FrontendBackendComm::for_stream(stream_id, on_pane_id);
+
+                Stream::new(
+                    stream_id,
+                    tcp_stream,
+                    on_pane_id,
+                    backend_comm_side,
+                    self.tokio_egui_bridge.clone(),
+                )
+                .run()
+                .await;
+
+                self.to_frontend
+                    .send(TopLevelBackendEvent::StreamStarted(frontend_comm_side))?;
             }
-            TopLevelFrontendEvent::CloseStream { on_pane_id } => {
+            TopLevelFrontendEvent::CloseStream {
+                stream_id,
+                on_pane_id,
+            } => {
                 trace!("Closing stream for pane ID: {:?}", on_pane_id);
                 let stream = self
                     .streams
-                    .values()
-                    .find(|stream| stream.pane_id == on_pane_id);
-
-                if let Some(stream) = stream {
-                    let id = stream.stream_id;
-                    info!("Stopping stream with ID {}", id);
-                    stream.terminate();
-                    self.streams
-                        .remove(&id)
-                        .expect("Stream should be in the map");
-                } else {
-                    error!("No stream found for pane ID: {:?}", on_pane_id);
-                }
+                    .get_mut(&stream_id)
+                    .expect("No stream found for pane ID");
+                info!("Stopping stream with ID {}", stream_id);
+                stream.terminate();
+                self.streams
+                    .remove(&stream_id)
+                    .expect("Stream should be in the map");
             }
         }
         Ok(())
@@ -312,9 +282,9 @@ pub struct DataTask {
 }
 
 pub struct TcpTask {
-    data_task_ctrl_tx: UnboundedSender<DataTaskCtrl>,
     incoming_logs_writer: LogAppendBufWriter<Arc<DashboardEvent>>,
     stream_id: usize,
+    tcp_stream: TcpStream,
     #[allow(unused)]
     cancel: CancellationToken,
 }
@@ -327,56 +297,46 @@ pub enum DataTaskCtrl {
 impl TcpTask {
     pub fn new(
         stream_id: usize,
+        tcp_stream: TcpStream,
         cancel: CancellationToken,
-        data_task_ctrl_tx: UnboundedSender<DataTaskCtrl>,
         incoming_logs_writer: LogAppendBufWriter<Arc<DashboardEvent>>,
     ) -> Self {
         Self {
             cancel,
-            data_task_ctrl_tx,
+            tcp_stream,
             incoming_logs_writer,
             stream_id,
         }
     }
 
     //pub fn spawn_on(self, task_set: &mut JoinSet<std::result::Result<(), StreamError>>) {
-    pub fn spawn(mut self) -> JoinHandle<std::result::Result<(), StreamError>> {
+    pub fn spawn(self) -> JoinHandle<std::result::Result<(), StreamError>> {
         //task_set.spawn(async move {
         tokio::task::spawn(async move {
+            let stream_id = self.stream_id;
             debug!("Starting TCP task");
             self.tcp_loop().await.map_err(|e| {
                 error!("TCP task failed: {:?}", e);
                 StreamError {
-                    stream_id: self.stream_id,
-                    msg: format!("TCP task failed: {e}"),
+                    stream_id,
+                    kind: StreamErrorKind::TcpTaskFailed,
                 }
             })?;
             Ok(())
         })
     }
 
-    async fn tcp_loop(&self) -> Result<()> {
-        // accept tpc connections in loop - only one at a time
-        let listener = TcpListener::bind("127.0.0.1:8080").await?;
-        info!("Listening for incoming TCP connections on 127.0.0.1:8080");
-
-        let (stream, addr) = listener.accept().await?;
-        info!("Accepted connection from {}", addr);
-        self.data_task_ctrl_tx.send(DataTaskCtrl::StartTimer)?;
-
+    async fn tcp_loop(self) -> Result<()> {
         // Forward messages
-        self.handle_log_stream(stream)
+        self.handle_log_stream()
             .await
-            .wrap_err(format!("Connection handling failed {addr}"))?;
-
-        info!("Connection from {} closed, stopping data task", addr);
-        self.data_task_ctrl_tx.send(DataTaskCtrl::StopTimer)?;
+            .wrap_err(format!("Connection handling failed"))?;
 
         Ok(())
     }
 
-    async fn handle_log_stream(&self, stream: TcpStream) -> Result<()> {
-        let reader = BufReader::new(stream);
+    async fn handle_log_stream(self) -> Result<()> {
+        let reader = BufReader::new(self.tcp_stream);
         let mut lines = reader.lines();
 
         loop {
@@ -410,7 +370,7 @@ impl DataTask {
     pub fn new(
         comms: BackendCommForStream,
         egui_ctx: egui::Context,
-        data_task_ctrl: UnboundedReceiver<DataTaskCtrl>,
+        //data_task_ctrl: UnboundedReceiver<DataTaskCtrl>,
         incoming_logs_buffer: LogAppendBufReader<Arc<DashboardEvent>>,
         cancel: CancellationToken,
     ) -> Self {
@@ -418,7 +378,7 @@ impl DataTask {
             all_logs: VecDeque::new(),
             filtered_logs: VecDeque::new(),
             incoming_logs_buffer,
-            ctrl_rx: data_task_ctrl,
+            ctrl_rx: todo!(),
             egui_ctx,
             cancel,
             comms,
@@ -472,10 +432,6 @@ impl DataTask {
                             Ok(_) => trace!("Published new logs to EGUI context"),
                             Err(e) => {
                                 error!("Failed to publish new logs: {:?}", e);
-                                return Err(StreamError {
-                                    id: self.comms.stream_id,
-                                    kind: StreamErrorKind::DataTaskFailed,
-                                });
                             }
                         }
                     }
