@@ -44,7 +44,7 @@ pub fn run_egui(
             let ctx = cc.egui_ctx.clone();
             tokio_egui_bridge.register_egui_context(ctx);
 
-            let mut tabs = Tabs::empty();
+            let tabs = Tabs::empty();
             //let tile_id = tabs.add_new_pane_to(tabs.root_tile());
             //to_backend.send(TopLevelFrontendEvent::OpenStream {
             //    on_pane_id: tile_id,
@@ -110,6 +110,12 @@ impl EguiApp {
     /// Acts on a framestate after the UI has been rendered.
     fn process_framestate(&mut self, frame_state: FrameState) -> Result<()> {
         if let Some(stream_id) = frame_state.open_pending_stream {
+            let initial_tile = self
+                .streams
+                .get(&stream_id)
+                .and_then(|meta| meta.pane_id)
+                .unwrap_or(self.tabs.root_tile());
+
             let new_tile_id = self.tabs.add_new_pane_to(self.tabs.root_tile(), stream_id);
 
             debug!(
@@ -176,18 +182,37 @@ impl EguiApp {
             .get_pane_with_id(tile_id)
             .expect("Pane should exist")
     }
+
+    fn render_pending_streams_window(&mut self, ctx: &egui::Context, frame_state: &mut FrameState) {
+        egui::Window::new("Pending Streams")
+            .default_pos(egui::pos2(100.0, 100.0))
+            .show(ctx, |ui| {
+                for (stream_id, stream_meta) in &self.streams {
+                    if stream_meta.pending {
+                        ui.horizontal(|ui| {
+                            ui.label(format!("Stream ID: {}", stream_id));
+                            if ui.button("Open").clicked() {
+                                frame_state.open_pending_stream = Some(*stream_id);
+                            }
+                        });
+                    }
+                }
+            });
+    }
 }
 
 impl eframe::App for EguiApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        let mut frame_state = FrameState::default();
-
         self.receive_and_process_backend_events()
             .expect("Failed to process backend events");
 
+        let mut frame_state = FrameState::default();
         egui::CentralPanel::default().show(ctx, |ui| {
             self.tabs.ui(ui, &mut frame_state);
         });
+
+        self.render_pending_streams_window(ctx, &mut frame_state);
+
         self.process_framestate(frame_state)
             .expect("Failed to process frame state");
     }

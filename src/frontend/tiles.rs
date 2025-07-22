@@ -6,9 +6,9 @@ use crate::prelude::*;
 use super::FrameState;
 
 pub struct Tabs {
-    tree: egui_tiles::Tree<Pane>,
+    pub tree: egui_tiles::Tree<Pane>,
 
-    root_tile_id: egui_tiles::TileId,
+    pub root_tile_id: egui_tiles::TileId,
     behavior: TreeBehavior,
     next_panel_id: AtomicUsize,
 }
@@ -25,19 +25,15 @@ impl std::fmt::Debug for Tabs {
 
 impl Tabs {
     pub fn empty() -> Self {
-        let (tree, base_tile_id) = {
-            let mut tiles = egui_tiles::Tiles::default();
-
-            let root = tiles.insert_tab_tile(vec![]);
-
-            (egui_tiles::Tree::new("my_tree", root, tiles), root)
-        };
+        let mut tiles = egui_tiles::Tiles::default();
+        let root_tile_id = tiles.insert_tab_tile(vec![]);
+        let tree = egui_tiles::Tree::new("my_tree", root_tile_id, tiles);
 
         Self {
             tree,
             behavior: TreeBehavior::default(),
             next_panel_id: AtomicUsize::new(2),
-            root_tile_id: base_tile_id,
+            root_tile_id,
         }
     }
 
@@ -72,10 +68,15 @@ impl Tabs {
             tabs.add_child(new_tile);
             tabs.set_active(new_tile);
         } else {
+            let parent_tile = self.tree.tiles.get(parent);
+            error!(
+                "Tried to add a new pane to a non-tab container parent tile: {:?}",
+                parent_tile
+            );
             panic!("Parent tile is not a tab container");
         }
 
-        return new_tile;
+        new_tile
     }
 
     pub fn get_pane_with_id(&self, tile_id: TileId) -> Option<&Pane> {
@@ -104,7 +105,7 @@ impl Default for TreeBehavior {
             simplification_options: egui_tiles::SimplificationOptions {
                 all_panes_must_have_tabs: true,
                 join_nested_linear_containers: true,
-                prune_empty_tabs: true,
+                prune_empty_tabs: false, // IMPORTANT -> or else our root tab is pruned immediately since no streams are open
                 prune_empty_containers: true,
                 prune_single_child_tabs: true,
                 prune_single_child_containers: true,
@@ -223,6 +224,7 @@ impl egui_tiles::Behavior<Pane> for TreeBehavior {
     }
 }
 
+#[derive(Debug)]
 pub struct Pane {
     pub nr: usize,
     pub associated_stream_id: usize,

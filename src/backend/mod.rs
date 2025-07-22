@@ -73,7 +73,7 @@ impl Backend {
         let ephemeral_listener = TcpListener::bind("0.0.0.0:0").await?;
         let ephemeral_port = ephemeral_listener.local_addr()?.port();
 
-        println!("Created ephemeral port: {}", ephemeral_port);
+        info!("Created ephemeral port: {}", ephemeral_port);
 
         // Send ephemeral port to client
         let msg = format!("PORT {}\n", ephemeral_port);
@@ -180,7 +180,7 @@ impl Backend {
                     self.tokio_egui_bridge.clone(),
                 )
                 .run()
-                .await;
+                .await?;
 
                 self.to_frontend
                     .send(TopLevelBackendEvent::StreamStarted(frontend_comm_side))?;
