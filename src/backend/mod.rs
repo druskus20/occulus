@@ -76,7 +76,7 @@ impl Backend {
         info!("Created ephemeral port: {}", ephemeral_port);
 
         // Send ephemeral port to client
-        let msg = format!("PORT {}\n", ephemeral_port);
+        let msg = format!("PORT {ephemeral_port}\n");
         stream.write_all(msg.as_bytes()).await?;
 
         let (new_stream, _addr) = ephemeral_listener
@@ -104,7 +104,7 @@ impl Backend {
                             self.last_stream_id += 1;
                             let stream_id = self.last_stream_id;
                             self.pending_streams.insert(stream_id, tcp_stream);
-                            self.to_frontend.send(TopLevelBackendEvent::NewPendingStream{ stream_id: stream_id, addr });
+                            self.to_frontend.send(TopLevelBackendEvent::NewPendingStream{ stream_id, addr }).expect("Failed to send new pending stream event");
                         }
                         Err(e) => {
                             error!("Failed to accept TCP connection: {:?}", e);
@@ -396,7 +396,7 @@ impl DataTask {
     //pub fn spawn_on(mut self, task_set: &mut JoinSet<std::result::Result<(), StreamError>>) {
     pub fn spawn(mut self) -> JoinHandle<std::result::Result<(), StreamError>> {
         const TICK_INTERVAL_MS: u64 = 100;
-        let mut timer = tokio::time::interval(Duration::from_millis(u64::MAX));
+        let mut timer = tokio::time::interval(Duration::from_millis(1000));
         let mut timer_enabled = true; // Start with timer enabled
 
         tokio::task::spawn(async move {
@@ -417,9 +417,8 @@ impl DataTask {
                     },
                     _ = timer.tick(), if timer_enabled => {
                         if self.incoming_logs_buffer.dropped_writer {
-                            trace!("Incoming logs writer was dropped, stopping timer");
+                            warn!("Incoming logs writer was dropped, stopping timer");
                             timer_enabled = false; // Stop the timer
-                            continue; // Skip the rest of the loop
                         }
                         match self.publish_new_logs().await {
                             Ok(_) => trace!("Published new logs to EGUI context"),
