@@ -219,6 +219,7 @@ pub struct LogAppendBufWriter<T> {
 #[derive(Clone)]
 pub struct LogAppendBufReader<T> {
     inner: Arc<Mutex<VecDeque<T>>>,
+    pub dropped_writer: bool,
 }
 
 impl<T> LogAppendBuf<T> {
@@ -228,7 +229,10 @@ impl<T> LogAppendBuf<T> {
             LogAppendBufWriter {
                 inner: inner.clone(),
             },
-            LogAppendBufReader { inner },
+            LogAppendBufReader {
+                inner,
+                dropped_writer: false,
+            },
         )
     }
 }
@@ -273,8 +277,6 @@ pub struct DataTask {
     /// TODO: this might be redundant with the display_data_tx (in backend)
     filtered_logs: LogCollection,
 
-    ctrl_rx: UnboundedReceiver<DataTaskCtrl>,
-
     egui_ctx: egui::Context,
 
     #[allow(unused)]
@@ -285,6 +287,7 @@ pub struct TcpTask {
     incoming_logs_writer: LogAppendBufWriter<Arc<DashboardEvent>>,
     stream_id: usize,
     tcp_stream: TcpStream,
+
     #[allow(unused)]
     cancel: CancellationToken,
 }
@@ -370,7 +373,6 @@ impl DataTask {
     pub fn new(
         comms: BackendCommForStream,
         egui_ctx: egui::Context,
-        //data_task_ctrl: UnboundedReceiver<DataTaskCtrl>,
         incoming_logs_buffer: LogAppendBufReader<Arc<DashboardEvent>>,
         cancel: CancellationToken,
     ) -> Self {
@@ -378,7 +380,6 @@ impl DataTask {
             all_logs: VecDeque::new(),
             filtered_logs: VecDeque::new(),
             incoming_logs_buffer,
-            ctrl_rx: todo!(),
             egui_ctx,
             cancel,
             comms,
@@ -397,25 +398,6 @@ impl DataTask {
             debug!("Starting DataTask");
             loop {
                 tokio::select! {
-                    r = self.ctrl_rx.recv() => {
-                        match r {
-                            Some(DataTaskCtrl::StopTimer) => {
-                                info!("Received DataTaskCtrl::Stop, disabling timer");
-                                timer_enabled = false;
-                                timer = tokio::time::interval(Duration::from_millis(u64::MAX)); // this is shitty but better than Pin
-                            }
-                            Some(DataTaskCtrl::StartTimer) => {
-                                info!("Received DataTaskCtrl::Start, enabling timer");
-                                timer_enabled = true;
-                                // Reset the timer to start fresh
-                                timer = tokio::time::interval(Duration::from_millis(TICK_INTERVAL_MS));
-                            }
-                            None => {
-                                info!("DataTaskCtrl channel closed, exiting loop");
-                                return Ok(());
-                            }
-                        }
-                    },
                     r = self.comms.from_frontend.recv() => {
                         match r {
                             Some(event) => {
@@ -428,6 +410,11 @@ impl DataTask {
                         }
                     },
                     _ = timer.tick(), if timer_enabled => {
+                        if self.incoming_logs_buffer.dropped_writer {
+                            trace!("Incoming logs writer was dropped, stopping timer");
+                            timer_enabled = false; // Stop the timer
+                            continue; // Skip the rest of the loop
+                        }
                         match self.publish_new_logs().await {
                             Ok(_) => trace!("Published new logs to EGUI context"),
                             Err(e) => {

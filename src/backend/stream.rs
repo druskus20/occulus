@@ -1,9 +1,10 @@
-use std::sync::Arc;
+// the backend needs to be aware of which tcp tasks are active.
+// the data task should be paused if the tcp task is not active.
+// connecting the two directly is bad, beucase it removes visibility from the frontend and the
+// backend. Instead use the backend as intermediary.
 
-use argus::tracing::oculus::DashboardEvent;
 use egui_tiles::TileId;
 use futures::FutureExt;
-use tokio::{sync::mpsc::unbounded_channel, task::JoinSet};
 use tokio_util::sync::CancellationToken;
 
 use crate::{
@@ -12,8 +13,6 @@ use crate::{
     data::BackendCommForStream,
     prelude::*,
 };
-
-use super::LogAppendBufReader;
 
 #[derive(Debug)]
 pub struct StreamError {
@@ -48,14 +47,18 @@ pub struct Stream {
     comm_with_frontend: BackendCommForStream,
 }
 
+pub enum TcpTaskCtrl {}
+
 pub struct StreamHandle {
     stream_id: usize,
     pane_id: TileId,
     cancel_data: CancellationToken,
     cancel_tcp: CancellationToken,
-    tokio_egui_bridge: TokioEguiBridge,
+
     tcp_task: Option<tokio::task::JoinHandle<std::result::Result<(), StreamError>>>,
     data_task: tokio::task::JoinHandle<std::result::Result<(), StreamError>>,
+
+    tokio_egui_bridge: TokioEguiBridge,
 }
 
 impl StreamHandle {
@@ -101,6 +104,7 @@ impl Stream {
         let tcp_task = TcpTask::new(
             self.stream_id,
             self.tcp_stream,
+            //to_data_ctrl,
             cancel_tcp.clone(),
             incoming_logs_tx,
         )
@@ -112,7 +116,6 @@ impl Stream {
         let data_task = DataTask::new(
             self.comm_with_frontend,
             egui_ctx,
-            //self.data_task_ctrl,
             incoming_logs_rx,
             cancel_data.clone(),
         )
