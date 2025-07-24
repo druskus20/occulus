@@ -70,7 +70,7 @@ impl Backend {
     }
     pub async fn move_to_ephemeral_port(&mut self, mut stream: TcpStream) -> Result<TcpStream> {
         // Create ephemeral listener
-        let ephemeral_listener = TcpListener::bind("0.0.0.0:0").await?;
+        let ephemeral_listener = TcpListener::bind("127.0.0.1:0").await?;
         let ephemeral_port = ephemeral_listener.local_addr()?.port();
 
         info!("Created ephemeral port: {}", ephemeral_port);
@@ -79,7 +79,12 @@ impl Backend {
         let msg = format!("PORT {}\n", ephemeral_port);
         stream.write_all(msg.as_bytes()).await?;
 
-        Ok(stream)
+        let (new_stream, _addr) = ephemeral_listener
+            .accept()
+            .await
+            .wrap_err("Failed to accept connection on ephemeral port")?;
+
+        Ok(new_stream)
     }
 
     pub async fn run(&mut self) {
@@ -162,6 +167,7 @@ impl Backend {
                 on_pane_id,
             } => {
                 trace!("Opening stream for pane ID: {:?}", on_pane_id);
+                dbg!(self.pending_streams.get(&stream_id));
                 let tcp_stream = self
                     .pending_streams
                     .remove(&stream_id)
