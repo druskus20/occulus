@@ -308,7 +308,6 @@ impl DataTask {
         let mut timer_enabled = true; // Start with timer enabled
 
         tokio::task::spawn(async move {
-            //task_set.spawn(async move {
             debug!("Starting DataTask");
             loop {
                 tokio::select! {

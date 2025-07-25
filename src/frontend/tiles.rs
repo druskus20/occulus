@@ -3,10 +3,10 @@ use std::sync::atomic::AtomicUsize;
 
 use crate::prelude::*;
 
-use super::FrameState;
+use super::{FrameState, pane::Pane};
 
 pub struct Tabs {
-    pub tree: egui_tiles::Tree<Pane>,
+    pub tree: egui_tiles::Tree<super::pane::Pane>,
 
     pub root_tile_id: egui_tiles::TileId,
     behavior: TreeBehavior,
@@ -89,6 +89,17 @@ impl Tabs {
             None
         }
     }
+
+    pub fn get_pane_with_id_mut(&mut self, tile_id: TileId) -> Option<&mut Pane> {
+        if let Some(tile) = self.tree.tiles.get_mut(tile_id) {
+            match tile {
+                Tile::Pane(pane) => Some(pane),
+                Tile::Container(_) => None,
+            }
+        } else {
+            None
+        }
+    }
 }
 
 pub(crate) struct TreeBehavior {
@@ -151,7 +162,6 @@ impl TreeBehavior {
             });
     }
 }
-
 impl egui_tiles::Behavior<Pane> for TreeBehavior {
     fn pane_ui(
         &mut self,
@@ -221,41 +231,5 @@ impl egui_tiles::Behavior<Pane> for TreeBehavior {
 
         // Proceed to removing the tab
         true
-    }
-}
-
-#[derive(Debug)]
-pub struct Pane {
-    pub nr: usize,
-    pub associated_stream_id: usize,
-}
-
-impl Pane {
-    pub fn new(nr: usize, stream_id: usize) -> Self {
-        Self {
-            nr,
-            associated_stream_id: stream_id,
-        }
-    }
-
-    pub fn ui(&self, ui: &mut egui::Ui) -> egui_tiles::UiResponse {
-        //todo!();
-        //log_viewer.ui()
-        let color = egui::epaint::Hsva::new(0.103 * self.nr as f32, 0.5, 0.5, 1.0);
-        ui.painter().rect_filled(ui.max_rect(), 0.0, color);
-
-        // this makes the pane itself draggable - which is not what we want
-        //
-        //let dragged = ui
-        //    .allocate_rect(ui.max_rect(), egui::Sense::click_and_drag())
-        //    .on_hover_cursor(egui::CursorIcon::Grab)
-        //    .dragged();
-        //if dragged {
-        //    egui_tiles::UiResponse::DragStarted
-        //} else {
-        //    egui_tiles::UiResponse::None
-        //}
-
-        egui_tiles::UiResponse::None
     }
 }

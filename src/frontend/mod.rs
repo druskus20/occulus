@@ -6,9 +6,11 @@ use crate::{
 };
 use egui::{Vec2, ahash::HashMap, vec2};
 use egui_tiles::TileId;
-use tiles::{Pane, Tabs};
+use pane::Pane;
+use tiles::Tabs;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
+mod pane;
 mod tiles;
 
 pub(super) mod colors {
@@ -55,7 +57,6 @@ pub fn run_egui(
                 to_backend,
                 from_backend,
                 tabs,
-                stream_comms: Vec::new(),
                 streams: HashMap::default(),
             }))
         }),
@@ -68,15 +69,12 @@ pub fn run_egui(
 struct EguiApp {
     tokio_bridge: TokioEguiBridge,
 
-    // top level event channels. The response is not assumed to be instant, both backend and
-    // frontend are allowed to take their time to respond
     to_backend: UnboundedSender<TopLevelFrontendEvent>,
     from_backend: UnboundedReceiver<TopLevelBackendEvent>,
 
     tabs: Tabs,
 
     streams: HashMap<usize, StreamMeta>,
-    stream_comms: Vec<FrontendCommForStream>,
 }
 
 #[derive(Debug, Clone)]
@@ -161,16 +159,20 @@ impl EguiApp {
                     );
                 }
                 TopLevelBackendEvent::StreamStarted(comm) => {
-                    self.streams
+                    let stream = self
+                        .streams
                         .get_mut(&comm.stream_id)
-                        .expect("Stream should be present")
-                        .pending = false;
-                    self.streams
-                        .get_mut(&comm.stream_id)
-                        .expect("Stream should be present")
-                        .pane_id = Some(comm.pane_id);
+                        .expect("Stream should be present");
 
-                    self.stream_comms.push(comm);
+                    stream.pending = false;
+                    stream.pane_id = Some(comm.pane_id);
+
+                    let pane = self
+                        .tabs
+                        .get_pane_with_id_mut(comm.pane_id)
+                        .expect("Pane should exist");
+
+                    pane.init_comm(comm);
                 }
             }
         }
@@ -190,7 +192,7 @@ impl EguiApp {
                 for (stream_id, stream_meta) in &self.streams {
                     if stream_meta.pending {
                         ui.horizontal(|ui| {
-                            ui.label(format!("Stream ID: {}", stream_id));
+                            ui.label(format!("Stream ID: {stream_id}"));
                             if ui.button("Open").clicked() {
                                 frame_state.open_pending_stream = Some(*stream_id);
                             }
