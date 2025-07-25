@@ -2,8 +2,6 @@ set positional-arguments
 
 default: launch
 
-
-
 launch *args='':
   cargo run -- launch $@
 
