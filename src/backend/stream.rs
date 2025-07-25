@@ -141,40 +141,42 @@ impl Stream {
         .spawn()
         .fuse();
 
-        tokio::pin!(tcp_task);
-        tokio::pin!(data_task);
         //futures::pin_mut!(tcp_task);
         //futures::pin_mut!(data_task);
 
-        let mut tcp_done = false;
-        let mut data_done = false;
-        loop {
-            tokio::select! {
-                r = &mut data_task, if !data_done => {
-                    data_done = true;
-                    match r {
-                        Ok(Ok(())) => debug!("Data task completed successfully"),
-                        Ok(Err(e)) => error!("Data task encountered an error"),
-                        Err(e) => error!("Data task panicked: {:?}", e),
+        tokio::task::spawn(async move {
+            tokio::pin!(tcp_task);
+            tokio::pin!(data_task);
+            let mut tcp_done = false;
+            let mut data_done = false;
+            loop {
+                tokio::select! {
+                    r = &mut data_task, if !data_done => {
+                        data_done = true;
+                        match r {
+                            Ok(Ok(())) => debug!("Data task completed successfully"),
+                            Ok(Err(e)) => error!("Data task encountered an error"),
+                            Err(e) => error!("Data task panicked: {:?}", e),
+                        }
                     }
-                }
 
-                r = &mut tcp_task, if !tcp_done => {
-                    self.done_tcp = true;
-                    tcp_done = true;
-                    match r {
-                        Ok(Ok(())) => debug!("TCP task completed successfully"),
-                        Ok(Err(e)) => error!("TCP task encountered an error"),
-                        Err(e) => error!("TCP task panicked: {:?}", e),
+                    r = &mut tcp_task, if !tcp_done => {
+                        self.done_tcp = true;
+                        tcp_done = true;
+                        match r {
+                            Ok(Ok(())) => debug!("TCP task completed successfully"),
+                            Ok(Err(e)) => error!("TCP task encountered an error"),
+                            Err(e) => error!("TCP task panicked: {:?}", e),
+                        }
                     }
-                }
-                else => {
-                    // Only return from the steram when both tasks are done
-                    break;
+                    else => {
+                        // Only return from the steram when both tasks are done
+                        break;
 
+                    }
                 }
             }
-        }
+        });
         Ok(())
     }
 }

@@ -178,6 +178,9 @@ impl Backend {
                 let (frontend_comm_side, backend_comm_side) =
                     FrontendBackendComm::for_stream(stream_id, on_pane_id);
 
+                self.to_frontend
+                    .send(TopLevelBackendEvent::StreamStarted(frontend_comm_side))?;
+
                 Stream::new(
                     stream_id,
                     tcp_stream,
@@ -187,9 +190,6 @@ impl Backend {
                 )
                 .run()
                 .await?;
-
-                self.to_frontend
-                    .send(TopLevelBackendEvent::StreamStarted(frontend_comm_side))?;
             }
             TopLevelFrontendEvent::CloseStream {
                 stream_id,

@@ -159,6 +159,10 @@ impl EguiApp {
                     );
                 }
                 TopLevelBackendEvent::StreamStarted(comm) => {
+                    debug!(
+                        "Stream started with ID {} on pane {:?}",
+                        comm.stream_id, comm.pane_id
+                    );
                     let stream = self
                         .streams
                         .get_mut(&comm.stream_id)
@@ -172,6 +176,10 @@ impl EguiApp {
                         .get_pane_with_id_mut(comm.pane_id)
                         .expect("Pane should exist");
 
+                    debug!(
+                        "Initializing comm for stream ID {} on pane {:?}",
+                        comm.stream_id, comm.pane_id
+                    );
                     pane.init_comm(comm);
                 }
             }
